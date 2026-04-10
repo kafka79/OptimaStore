@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Inventory</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="header">
+    <h1>Inventory</h1>
+    <p class="subtitle">Stock levels, adjustments, and reports (Java + JDBC backend)</p>
+  </header>
+
+  <main class="layout">
+    <section class="card" aria-labelledby="add-heading">
+      <h2 id="add-heading">Add item</h2>
+      <form id="add-form" class="form-grid">
+        <label>SKU <input name="sku" required maxlength="64" autocomplete="off" /></label>
+        <label>Name <input name="name" required maxlength="255" /></label>
+        <label>Quantity <input name="quantity" type="number" min="0" value="0" required /></label>
+        <label>Unit price <input name="unitPrice" type="number" min="0" step="0.01" value="0" required /></label>
+        <label>Category <input name="category" maxlength="128" value="General" /></label>
+        <div class="form-actions">
+          <button type="submit">Add to inventory</button>
+        </div>
+      </form>
+      <p id="form-message" class="message" role="status"></p>
+    </section>
+
+    <section class="card" aria-labelledby="report-heading">
+      <h2 id="report-heading">Report</h2>
+      <div class="report-controls">
+        <label>Low-stock threshold
+          <input id="threshold" type="number" min="0" value="5" />
+        </label>
+        <button type="button" id="refresh-report">Refresh report</button>
+        <button type="button" id="export-csv">Download CSV</button>
+      </div>
+      <dl class="report-stats" id="report-stats"></dl>
+      <h3 class="report-sub">Low-stock items</h3>
+      <div class="table-wrap">
+        <table id="low-stock-table">
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Name</th>
+              <th>Qty</th>
+              <th>Unit</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card full-width" aria-labelledby="list-heading">
+      <h2 id="list-heading">All items</h2>
+      <div class="table-wrap">
+        <table id="items-table">
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Name</th>
+              <th>Qty</th>
+              <th>Unit</th>
+              <th>Category</th>
+              <th>Adjust</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
