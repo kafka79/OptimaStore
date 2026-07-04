@@ -1,0 +1,100 @@
+package com.example.inventory.service;
+
+import com.example.inventory.dto.AdjustQuantityRequest;
+import com.example.inventory.dto.CreateItemRequest;
+import com.example.inventory.dto.PageResponse;
+import com.example.inventory.model.InventoryReport;
+import com.example.inventory.model.Item;
+import com.example.inventory.repository.InventoryJdbcRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+class InventoryServiceTests {
+
+    @Mock
+    private InventoryJdbcRepository repository;
+
+    @InjectMocks
+    private InventoryService service;
+
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+    }
+
+    @Test
+    void testListItemsAll() {
+        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now());
+        when(repository.findAll()).thenReturn(List.of(item));
+
+        List<Item> result = service.listItems();
+        assertEquals(1, result.size());
+        assertEquals("SKU1", result.get(0).sku());
+    }
+
+    @Test
+    void testListItemsPaginated() {
+        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now());
+        PageResponse<Item> pageResponse = new PageResponse<>(List.of(item), 0, 10, 1);
+        when(repository.findAll(0, 10, "SKU1", "Category")).thenReturn(pageResponse);
+
+        PageResponse<Item> result = service.listItems(0, 10, "SKU1", "Category");
+        assertEquals(1, result.totalElements());
+        assertEquals(1, result.content().size());
+        assertEquals("SKU1", result.content().get(0).sku());
+    }
+
+    @Test
+    void testAddItem() {
+        CreateItemRequest request = new CreateItemRequest("SKU1", "Name1", 10, BigDecimal.TEN, "Category");
+        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now());
+        when(repository.insert("SKU1", "Name1", 10, BigDecimal.TEN, "Category")).thenReturn(item);
+
+        Item result = service.addItem(request);
+        assertNotNull(result);
+        assertEquals("SKU1", result.sku());
+    }
+
+    @Test
+    void testRemoveItem() {
+        when(repository.deleteById(1L)).thenReturn(true);
+        assertTrue(service.removeItem(1L));
+
+        when(repository.deleteById(2L)).thenReturn(false);
+        assertFalse(service.removeItem(2L));
+    }
+
+    @Test
+    void testAdjustStock() {
+        AdjustQuantityRequest request = new AdjustQuantityRequest(5);
+        Item item = new Item(1L, "SKU1", "Name1", 15, BigDecimal.TEN, "Category", Instant.now());
+        when(repository.adjustQuantity(1L, 5)).thenReturn(Optional.of(item));
+
+        Optional<Item> result = service.adjustStock(1L, request);
+        assertTrue(result.isPresent());
+        assertEquals(15, result.get().quantity());
+    }
+
+    @Test
+    void testReport() {
+        InventoryReport report = new InventoryReport(1, 10, BigDecimal.TEN, 0, Collections.emptyList());
+        when(repository.buildReport(5)).thenReturn(report);
+
+        InventoryReport result = service.report(5);
+        assertNotNull(result);
+        assertEquals(1, result.distinctItems());
+        assertEquals(10, result.totalUnitsOnHand());
+    }
+}

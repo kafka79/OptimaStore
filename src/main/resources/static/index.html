@@ -55,7 +55,19 @@
     </section>
 
     <section class="card full-width" aria-labelledby="list-heading">
-      <h2 id="list-heading">All items</h2>
+      <div class="table-header-controls">
+        <h2 id="list-heading" style="margin: 0;">All items</h2>
+        <div class="table-controls">
+          <input type="text" id="search-input" placeholder="Search SKU or Name..." autocomplete="off" />
+          <select id="category-filter">
+            <option value="all">All Categories</option>
+            <option value="General">General</option>
+            <option value="Fruit">Fruit</option>
+            <option value="Electronics">Electronics</option>
+            <option value="Groceries">Groceries</option>
+          </select>
+        </div>
+      </div>
       <div class="table-wrap">
         <table id="items-table">
           <thead>
@@ -72,8 +84,25 @@
           <tbody></tbody>
         </table>
       </div>
+      <div class="pagination" id="pagination-controls">
+        <button type="button" class="secondary" id="prev-page" disabled>Previous</button>
+        <span id="page-info">Page 1 of 1</span>
+        <button type="button" class="secondary" id="next-page" disabled>Next</button>
+      </div>
     </section>
   </main>
+
+  <!-- Custom Confirm Modal -->
+  <div id="confirm-modal" class="modal-overlay" aria-hidden="true" role="dialog">
+    <div class="modal-content">
+      <h3 id="modal-title">Confirm Action</h3>
+      <p id="modal-message">Are you sure you want to proceed?</p>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="modal-cancel">Cancel</button>
+        <button type="button" class="danger" id="modal-confirm">Confirm</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>

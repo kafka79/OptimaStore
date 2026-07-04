@@ -15,8 +15,65 @@ function setMessage(el, text, cls) {
   el.className = "message" + (cls ? " " + cls : "");
 }
 
+// Pagination & Filter States
+let currentPage = 0;
+const pageSize = 10;
+let totalPages = 1;
+let searchQuery = "";
+let categoryFilter = "all";
+
+// Modal State Management
+let modalConfirmCallback = null;
+
+function showConfirmModal(message, onConfirm) {
+  const modal = document.getElementById("confirm-modal");
+  const msgEl = document.getElementById("modal-message");
+  msgEl.textContent = message;
+  modal.classList.add("active");
+  modal.setAttribute("aria-hidden", "false");
+  modalConfirmCallback = onConfirm;
+}
+
+function hideConfirmModal() {
+  const modal = document.getElementById("confirm-modal");
+  modal.classList.remove("active");
+  modal.setAttribute("aria-hidden", "true");
+  modalConfirmCallback = null;
+}
+
+document.getElementById("modal-cancel").addEventListener("click", hideConfirmModal);
+document.getElementById("modal-confirm").addEventListener("click", () => {
+  if (modalConfirmCallback) {
+    modalConfirmCallback();
+  }
+  hideConfirmModal();
+});
+
+// Dynamic form validation helpers
+function clearErrors() {
+  document.querySelectorAll(".invalid-input").forEach((el) => el.classList.remove("invalid-input"));
+  document.querySelectorAll(".field-error").forEach((el) => el.remove());
+}
+
+function showFieldError(inputName, message) {
+  const input = document.querySelector(`[name="${inputName}"]`);
+  if (!input) return;
+  input.classList.add("invalid-input");
+  const err = document.createElement("span");
+  err.className = "field-error";
+  err.textContent = message;
+  input.parentNode.appendChild(err);
+}
+
 async function loadItems() {
-  const res = await api("/api/items");
+  const params = new URLSearchParams({
+    page: currentPage,
+    size: pageSize,
+  });
+  if (searchQuery) params.append("search", searchQuery);
+  if (categoryFilter && categoryFilter !== "all") params.append("category", categoryFilter);
+
+  const res = await api(`/api/items?${params.toString()}`);
   if (!res.ok) throw new Error("Failed to load items");
   return res.json();
 }
@@ -27,9 +84,26 @@ async function loadReport(threshold) {
   return res.json();
 }
 
-function renderItems(items) {
+function renderItems(pageResponse) {
   const tbody = document.querySelector("#items-table tbody");
   tbody.innerHTML = "";
+
+  const items = pageResponse.content || [];
+  totalPages = pageResponse.totalPages || 1;
+  currentPage = pageResponse.page || 0;
+
+  // Render pagination numbers
+  document.getElementById("page-info").textContent = `Page ${currentPage + 1} of ${Math.max(1, totalPages)}`;
+  document.getElementById("prev-page").disabled = currentPage === 0;
+  document.getElementById("next-page").disabled = currentPage >= totalPages - 1;
+
+  if (items.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="7" style="text-align: center; color: var(--muted); padding: 1.5rem;">No items match the filters.</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+
   for (const it of items) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
@@ -58,7 +132,11 @@ function renderItems(items) {
   });
 
   tbody.querySelectorAll(".delete-item").forEach((btn) => {
-    btn.addEventListener("click", () => deleteItem(btn.dataset.id));
+    btn.addEventListener("click", () => {
+      showConfirmModal(`Remove item "${btn.closest('tr').cells[1].textContent}" from inventory?`, () => {
+        deleteItem(btn.dataset.id);
+      });
+    });
   });
 }
 
@@ -79,6 +157,13 @@ function renderReport(report) {
 
   const lowBody = document.querySelector("#low-stock-table tbody");
   lowBody.innerHTML = "";
+  if (report.lowStockItems.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="4" style="text-align: center; color: var(--muted); padding: 0.8rem;">All items are well-stocked.</td>`;
+    lowBody.appendChild(tr);
+    return;
+  }
+
   for (const it of report.lowStockItems) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
@@ -91,36 +176,11 @@ function renderReport(report) {
   }
 }
 
-function reportToCsv(items) {
-  const headers = ["id", "sku", "name", "quantity", "unitPrice", "category", "updatedAt"];
-  const lines = [headers.join(",")];
-  for (const it of items) {
-    lines.push(
-      [
-        it.id,
-        csvEscape(it.sku),
-        csvEscape(it.name),
-        it.quantity,
-        it.unitPrice,
-        csvEscape(it.category),
-        csvEscape(it.updatedAt),
-      ].join(",")
-    );
-  }
-  return lines.join("\r\n");
-}
-
-function csvEscape(v) {
-  const s = String(v ?? "");
-  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
 async function refreshAll() {
   const msg = document.getElementById("form-message");
   try {
-    const items = await loadItems();
-    renderItems(items);
+    const pageResponse = await loadItems();
+    renderItems(pageResponse);
     const th = document.getElementById("threshold").value || "5";
     const report = await loadReport(th);
     renderReport(report);
@@ -132,15 +192,47 @@ async function refreshAll() {
 
 document.getElementById("add-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  clearErrors();
   const form = e.target;
   const msg = document.getElementById("form-message");
+  
+  let hasError = false;
+  const sku = form.sku.value.trim();
+  const name = form.name.value.trim();
+  const quantityVal = form.quantity.value;
+  const unitPriceVal = form.unitPrice.value;
+  const category = form.category.value.trim() || "General";
+
+  if (!sku) {
+    showFieldError("sku", "SKU is required");
+    hasError = true;
+  }
+  if (!name) {
+    showFieldError("name", "Item name is required");
+    hasError = true;
+  }
+  if (quantityVal === "" || Number(quantityVal) < 0) {
+    showFieldError("quantity", "Quantity must be ≥ 0");
+    hasError = true;
+  }
+  if (unitPriceVal === "" || Number(unitPriceVal) < 0) {
+    showFieldError("unitPrice", "Unit price must be ≥ 0");
+    hasError = true;
+  }
+
+  if (hasError) {
+    setMessage(msg, "Please fix verification errors.", "error");
+    return;
+  }
+
   const body = {
-    sku: form.sku.value.trim(),
-    name: form.name.value.trim(),
-    quantity: Number(form.quantity.value),
-    unitPrice: form.unitPrice.value,
-    category: form.category.value.trim() || "General",
+    sku,
+    name,
+    quantity: Number(quantityVal),
+    unitPrice: unitPriceVal,
+    category,
   };
+
   const res = await api("/api/items", { method: "POST", body: JSON.stringify(body) });
   if (res.status === 201) {
     setMessage(msg, "Item added.", "ok");
@@ -148,9 +240,11 @@ document.getElementById("add-form").addEventListener("submit", async (e) => {
     form.category.value = "General";
     form.quantity.value = "0";
     form.unitPrice.value = "0";
+    currentPage = 0;
     await refreshAll();
   } else if (res.status === 409) {
     setMessage(msg, "That SKU already exists.", "error");
+    showFieldError("sku", "SKU already in use");
   } else if (res.status === 400) {
     setMessage(msg, "Check your inputs (numbers must be ≥ 0).", "error");
   } else {
@@ -176,31 +270,57 @@ async function adjustQuantity(id, delta) {
 }
 
 async function deleteItem(id) {
-  if (!confirm("Remove this item from inventory?")) return;
   const msg = document.getElementById("form-message");
   const res = await api(`/api/items/${id}`, { method: "DELETE" });
   if (res.status === 204) {
     setMessage(msg, "Item removed.", "ok");
+    // If we've removed the last item on the current page, step back one page
+    const itemsTbody = document.querySelector("#items-table tbody");
+    if (itemsTbody.children.length === 1 && currentPage > 0) {
+      currentPage--;
+    }
     await refreshAll();
   } else {
     setMessage(msg, "Could not remove item.", "error");
   }
 }
 
+// Add event listeners for new controls
+let searchTimeout = null;
+document.getElementById("search-input").addEventListener("input", (e) => {
+  clearTimeout(searchTimeout);
+  searchQuery = e.target.value.trim();
+  searchTimeout = setTimeout(() => {
+    currentPage = 0;
+    refreshAll();
+  }, 250);
+});
+
+document.getElementById("category-filter").addEventListener("change", (e) => {
+  categoryFilter = e.target.value;
+  currentPage = 0;
+  refreshAll();
+});
+
+document.getElementById("prev-page").addEventListener("click", () => {
+  if (currentPage > 0) {
+    currentPage--;
+    refreshAll();
+  }
+});
+
+document.getElementById("next-page").addEventListener("click", () => {
+  if (currentPage < totalPages - 1) {
+    currentPage++;
+    refreshAll();
+  }
+});
+
 document.getElementById("refresh-report").addEventListener("click", refreshAll);
 
-document.getElementById("export-csv").addEventListener("click", async () => {
-  try {
-    const items = await loadItems();
-    const blob = new Blob([reportToCsv(items)], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "inventory-export.csv";
-    a.click();
-    URL.revokeObjectURL(a.href);
-  } catch {
-    document.getElementById("form-message").textContent = "Export failed.";
-  }
+// Stream CSV directly from the backend (no client memory overhead)
+document.getElementById("export-csv").addEventListener("click", () => {
+  window.location.href = "/api/items/export";
 });
 
 refreshAll();

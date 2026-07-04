@@ -3,7 +3,10 @@ package com.example.inventory.repository;
 import com.example.inventory.exception.DuplicateSkuException;
 import com.example.inventory.model.InventoryReport;
 import com.example.inventory.model.Item;
+import com.example.inventory.dto.PageResponse;
 import org.springframework.stereotype.Repository;
+
+import java.io.PrintWriter;
 
 import javax.sql.DataSource;
 import java.math.BigDecimal;
@@ -24,7 +27,7 @@ public class InventoryJdbcRepository {
     private final DataSource dataSource;
 
     public InventoryJdbcRepository(DataSource dataSource) {
-        this.dataSource = dataSource;
+        this.dataSource = new org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy(dataSource);
     }
 
     public List<Item> findAll() {
@@ -43,6 +46,96 @@ public class InventoryJdbcRepository {
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to load items", e);
         }
+    }
+
+    public PageResponse<Item> findAll(int page, int size, String search, String category) {
+        StringBuilder countSql = new StringBuilder("SELECT COUNT(*) FROM items WHERE 1=1");
+        StringBuilder selectSql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at FROM items WHERE 1=1");
+        List<Object> params = new ArrayList<>();
+
+        if (search != null && !search.trim().isEmpty()) {
+            String searchPattern = "%" + search.trim().toLowerCase() + "%";
+            countSql.append(" AND (LOWER(sku) LIKE ? OR LOWER(name) LIKE ?)");
+            selectSql.append(" AND (LOWER(sku) LIKE ? OR LOWER(name) LIKE ?)");
+            params.add(searchPattern);
+            params.add(searchPattern);
+        }
+
+        if (category != null && !category.trim().isEmpty() && !category.equalsIgnoreCase("all")) {
+            countSql.append(" AND LOWER(category) = ?");
+            selectSql.append(" AND LOWER(category) = ?");
+            params.add(category.trim().toLowerCase());
+        }
+
+        long totalItems = 0;
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(countSql.toString())) {
+            int idx = 1;
+            for (Object p : params) {
+                ps.setObject(idx++, p);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    totalItems = rs.getLong(1);
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to count items", e);
+        }
+
+        selectSql.append(" ORDER BY name LIMIT ? OFFSET ?");
+        List<Object> selectParams = new ArrayList<>(params);
+        selectParams.add(size);
+        selectParams.add(page * size);
+
+        List<Item> items = new ArrayList<>();
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(selectSql.toString())) {
+            int idx = 1;
+            for (Object p : selectParams) {
+                ps.setObject(idx++, p);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    items.add(mapRow(rs));
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to page items", e);
+        }
+
+        return new PageResponse<>(items, page, size, totalItems);
+    }
+
+    public void streamAll(PrintWriter writer) {
+        String sql = "SELECT id, sku, name, quantity, unit_price, category, updated_at FROM items ORDER BY name";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                Item item = mapRow(rs);
+                writer.println(String.format("%s,%s,%s,%d,%s,%s,%s",
+                        item.id() != null ? item.id().toString() : "",
+                        csvEscape(item.sku()),
+                        csvEscape(item.name()),
+                        item.quantity(),
+                        item.unitPrice().toString(),
+                        csvEscape(item.category()),
+                        item.updatedAt().toString()
+                ));
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to stream items", e);
+        }
+    }
+
+    private String csvEscape(String s) {
+        if (s == null) return "";
+        String escaped = s.replace("\"", "\"\"");
+        if (escaped.contains(",") || escaped.contains("\"") || escaped.contains("\n") || escaped.contains("\r")) {
+            return "\"" + escaped + "\"";
+        }
+        return escaped;
     }
 
     public Optional<Item> findById(long id) {
@@ -132,26 +225,31 @@ public class InventoryJdbcRepository {
     }
 
     public InventoryReport buildReport(int lowStockThreshold) {
-        String allSql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at FROM items
+        String statsSql = """
+                SELECT 
+                    COUNT(*) as distinct_items, 
+                    COALESCE(SUM(quantity), 0) as total_units, 
+                    COALESCE(SUM(quantity * unit_price), 0.0) as total_value
+                FROM items
                 """;
         String lowSql = """
                 SELECT id, sku, name, quantity, unit_price, category, updated_at FROM items
                 WHERE quantity < ? ORDER BY quantity, name
                 """;
         try (Connection conn = dataSource.getConnection()) {
-            List<Item> all = new ArrayList<>();
+            long distinctItems = 0;
             long totalUnits = 0;
             BigDecimal totalValue = BigDecimal.ZERO;
-            try (PreparedStatement ps = conn.prepareStatement(allSql);
+
+            try (PreparedStatement ps = conn.prepareStatement(statsSql);
                  ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Item item = mapRow(rs);
-                    all.add(item);
-                    totalUnits += item.quantity();
-                    totalValue = totalValue.add(item.unitPrice().multiply(BigDecimal.valueOf(item.quantity())));
+                if (rs.next()) {
+                    distinctItems = rs.getLong("distinct_items");
+                    totalUnits = rs.getLong("total_units");
+                    totalValue = rs.getBigDecimal("total_value");
                 }
             }
+
             List<Item> low = new ArrayList<>();
             try (PreparedStatement ps = conn.prepareStatement(lowSql)) {
                 ps.setInt(1, lowStockThreshold);
@@ -161,7 +259,7 @@ public class InventoryJdbcRepository {
                     }
                 }
             }
-            return new InventoryReport(all.size(), totalUnits, totalValue, low.size(), low);
+            return new InventoryReport(distinctItems, totalUnits, totalValue, low.size(), low);
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to build report", e);
         }
