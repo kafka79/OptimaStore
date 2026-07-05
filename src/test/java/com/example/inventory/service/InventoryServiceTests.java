@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -26,6 +27,9 @@ class InventoryServiceTests {
     @Mock
     private InventoryJdbcRepository repository;
 
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
+
     @InjectMocks
     private InventoryService service;
 
@@ -36,7 +40,7 @@ class InventoryServiceTests {
 
     @Test
     void testListItemsAll() {
-        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now());
+        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false);
         when(repository.findAll()).thenReturn(List.of(item));
 
         List<Item> result = service.listItems();
@@ -46,7 +50,7 @@ class InventoryServiceTests {
 
     @Test
     void testListItemsPaginated() {
-        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now());
+        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false);
         PageResponse<Item> pageResponse = new PageResponse<>(List.of(item), 0, 10, 1);
         when(repository.findAll(0, 10, "SKU1", "Category")).thenReturn(pageResponse);
 
@@ -59,7 +63,7 @@ class InventoryServiceTests {
     @Test
     void testAddItem() {
         CreateItemRequest request = new CreateItemRequest("SKU1", "Name1", 10, BigDecimal.TEN, "Category");
-        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now());
+        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false);
         when(repository.insert("SKU1", "Name1", 10, BigDecimal.TEN, "Category")).thenReturn(item);
 
         Item result = service.addItem(request);
@@ -79,7 +83,7 @@ class InventoryServiceTests {
     @Test
     void testAdjustStock() {
         AdjustQuantityRequest request = new AdjustQuantityRequest(5);
-        Item item = new Item(1L, "SKU1", "Name1", 15, BigDecimal.TEN, "Category", Instant.now());
+        Item item = new Item(1L, "SKU1", "Name1", 15, BigDecimal.TEN, "Category", Instant.now(), false);
         when(repository.adjustQuantity(1L, 5)).thenReturn(Optional.of(item));
 
         Optional<Item> result = service.adjustStock(1L, request);

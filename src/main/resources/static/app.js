@@ -11,8 +11,13 @@ function money(n) {
 }
 
 function setMessage(el, text, cls) {
-  el.textContent = text || "";
-  el.className = "message" + (cls ? " " + cls : "");
+  if (!text) {
+    el.textContent = "";
+    el.classList.remove("active");
+    return;
+  }
+  el.textContent = text;
+  el.className = "message " + (cls || "") + " active";
 }
 
 // Pagination & Filter States
@@ -59,10 +64,13 @@ function showFieldError(inputName, message) {
   const input = document.querySelector(`[name="${inputName}"]`);
   if (!input) return;
   input.classList.add("invalid-input");
-  const err = document.createElement("span");
-  err.className = "field-error";
-  err.textContent = message;
-  input.parentNode.appendChild(err);
+  const fieldWrapper = input.closest(".form-field");
+  if (fieldWrapper) {
+    const err = document.createElement("span");
+    err.className = "field-error";
+    err.textContent = message;
+    fieldWrapper.appendChild(err);
+  }
 }
 
 async function loadItems() {
@@ -76,6 +84,33 @@ async function loadItems() {
   const res = await api(`/api/items?${params.toString()}`);
   if (!res.ok) throw new Error("Failed to load items");
   return res.json();
+}
+
+async function loadCategories() {
+  try {
+    const res = await api("/api/items/categories");
+    if (!res.ok) throw new Error("Failed to load categories");
+    const categories = await res.json();
+    const select = document.getElementById("category-filter");
+    const currentValue = categoryFilter;
+
+    select.innerHTML = '<option value="all">All Categories</option>';
+    for (const cat of categories) {
+      const opt = document.createElement("option");
+      opt.value = cat;
+      opt.textContent = cat;
+      select.appendChild(opt);
+    }
+
+    if (categories.includes(currentValue)) {
+      select.value = currentValue;
+    } else {
+      categoryFilter = "all";
+      select.value = "all";
+    }
+  } catch (e) {
+    console.error("Error fetching distinct categories", e);
+  }
 }
 
 async function loadReport(threshold) {
@@ -99,7 +134,15 @@ function renderItems(pageResponse) {
 
   if (items.length === 0) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="7" style="text-align: center; color: var(--muted); padding: 1.5rem;">No items match the filters.</td>`;
+    tr.innerHTML = `
+      <td colspan="7" style="text-align: center; padding: 3rem 1.5rem;">
+        <div class="empty-state">
+          <div class="empty-icon">🔍</div>
+          <p class="empty-title" style="margin: 0.5rem 0 0.25rem; font-weight: 600; color: var(--text);">No items found</p>
+          <p class="empty-subtitle" style="margin: 0; font-size: 0.85rem; color: var(--muted);">We couldn't find any items matching your filters.</p>
+        </div>
+      </td>
+    `;
     tbody.appendChild(tr);
     return;
   }
@@ -179,7 +222,10 @@ function renderReport(report) {
 async function refreshAll() {
   const msg = document.getElementById("form-message");
   try {
-    const pageResponse = await loadItems();
+    const [pageResponse, _] = await Promise.all([
+      loadItems(),
+      loadCategories()
+    ]);
     renderItems(pageResponse);
     const th = document.getElementById("threshold").value || "5";
     const report = await loadReport(th);
@@ -261,8 +307,11 @@ async function adjustQuantity(id, delta) {
   if (res.ok) {
     setMessage(msg, "Stock updated.", "ok");
     await refreshAll();
+  } else if (res.status === 409) {
+    setMessage(msg, "Adjust failed: Quantity cannot drop below 0.", "error");
+    await refreshAll();
   } else if (res.status === 404) {
-    setMessage(msg, "Item not found or quantity would go negative.", "error");
+    setMessage(msg, "Item not found or archived.", "error");
     await refreshAll();
   } else {
     setMessage(msg, "Update failed.", "error");
@@ -273,8 +322,7 @@ async function deleteItem(id) {
   const msg = document.getElementById("form-message");
   const res = await api(`/api/items/${id}`, { method: "DELETE" });
   if (res.status === 204) {
-    setMessage(msg, "Item removed.", "ok");
-    // If we've removed the last item on the current page, step back one page
+    setMessage(msg, "Item removed (soft-deleted).", "ok");
     const itemsTbody = document.querySelector("#items-table tbody");
     if (itemsTbody.children.length === 1 && currentPage > 0) {
       currentPage--;
@@ -318,7 +366,7 @@ document.getElementById("next-page").addEventListener("click", () => {
 
 document.getElementById("refresh-report").addEventListener("click", refreshAll);
 
-// Stream CSV directly from the backend (no client memory overhead)
+// Stream CSV directly from the backend
 document.getElementById("export-csv").addEventListener("click", () => {
   window.location.href = "/api/items/export";
 });

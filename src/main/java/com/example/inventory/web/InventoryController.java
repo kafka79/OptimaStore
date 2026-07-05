@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/items")
@@ -77,12 +78,17 @@ public class InventoryController {
             @Valid @RequestBody AdjustQuantityRequest body
     ) {
         logger.info("REST request to adjust item quantity: id={}, delta={}", id, body.delta());
-        return inventoryService.adjustStock(id, body)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> {
-                    logger.warn("Failed to adjust item quantity: id={}", id);
-                    return ResponseEntity.notFound().build();
-                });
+        try {
+            return inventoryService.adjustStock(id, body)
+                    .map(ResponseEntity::ok)
+                    .orElseGet(() -> {
+                        logger.warn("Failed to adjust item quantity: id={}", id);
+                        return ResponseEntity.notFound().build();
+                    });
+        } catch (IllegalArgumentException e) {
+            logger.warn("Adjustment validation constraint failed for ID {}: {}", id, e.getMessage());
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        }
     }
 
     @GetMapping("/export")
@@ -95,5 +101,10 @@ public class InventoryController {
             inventoryService.streamAllItems(writer);
         }
     }
-}
 
+    @GetMapping("/categories")
+    public List<String> categories() {
+        logger.info("REST request to list distinct categories");
+        return inventoryService.getCategories();
+    }
+}

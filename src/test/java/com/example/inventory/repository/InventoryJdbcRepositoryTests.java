@@ -39,6 +39,7 @@ class InventoryJdbcRepositoryTests {
         Optional<Item> found = repository.findById(inserted.id());
         assertTrue(found.isPresent());
         assertEquals("Item 100", found.get().name());
+        assertFalse(found.get().archived());
     }
 
     @Test
@@ -67,8 +68,9 @@ class InventoryJdbcRepositoryTests {
         assertTrue(adjusted.isPresent());
         assertEquals(15, adjusted.get().quantity());
 
-        Optional<Item> adjustedNegative = repository.adjustQuantity(inserted.id(), -20);
-        assertFalse(adjustedNegative.isPresent()); // Quantity cannot go below zero
+        assertThrows(IllegalArgumentException.class, () -> {
+            repository.adjustQuantity(inserted.id(), -20); // Quantity cannot go below zero
+        });
     }
 
     @Test
@@ -82,5 +84,33 @@ class InventoryJdbcRepositoryTests {
         assertEquals(0, new BigDecimal("70.00").compareTo(report.totalInventoryValue()));
         assertEquals(1, report.lowStockItemCount());
         assertEquals("Item 1", report.lowStockItems().get(0).name());
+    }
+
+    @Test
+    void testSoftDelete() {
+        Item inserted = repository.insert("SKU-DEL", "To Delete", 5, new BigDecimal("4.00"), "General");
+        assertNotNull(inserted.id());
+
+        // Delete the item (soft delete)
+        assertTrue(repository.deleteById(inserted.id()));
+
+        // Verify it is not found by regular query
+        Optional<Item> found = repository.findById(inserted.id());
+        assertFalse(found.isPresent());
+
+        // Verify it is found in the database by direct JDBC check as archived
+        Boolean isArchived = jdbcTemplate.queryForObject(
+                "SELECT archived FROM items WHERE id = ?",
+                Boolean.class,
+                inserted.id()
+        );
+        assertTrue(isArchived);
+
+        // Verify that trying to insert the same SKU un-archives and updates it
+        Item readded = repository.insert("SKU-DEL", "Reactivated Name", 20, new BigDecimal("5.00"), "Fruit");
+        assertEquals(inserted.id(), readded.id());
+        assertEquals("Reactivated Name", readded.name());
+        assertEquals(20, readded.quantity());
+        assertFalse(readded.archived());
     }
 }

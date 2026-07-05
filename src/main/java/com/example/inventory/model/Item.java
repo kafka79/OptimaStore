@@ -10,6 +10,7 @@ public record Item(
         int quantity,
         BigDecimal unitPrice,
         String category,
-        Instant updatedAt
+        Instant updatedAt,
+        boolean archived
 ) {
 }

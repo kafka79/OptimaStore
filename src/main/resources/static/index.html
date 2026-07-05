@@ -16,11 +16,26 @@
     <section class="card" aria-labelledby="add-heading">
       <h2 id="add-heading">Add item</h2>
       <form id="add-form" class="form-grid">
-        <label>SKU <input name="sku" required maxlength="64" autocomplete="off" /></label>
-        <label>Name <input name="name" required maxlength="255" /></label>
-        <label>Quantity <input name="quantity" type="number" min="0" value="0" required /></label>
-        <label>Unit price <input name="unitPrice" type="number" min="0" step="0.01" value="0" required /></label>
-        <label>Category <input name="category" maxlength="128" value="General" /></label>
+        <div class="form-field">
+          <label for="input-sku">SKU</label>
+          <input id="input-sku" name="sku" required maxlength="64" autocomplete="off" />
+        </div>
+        <div class="form-field">
+          <label for="input-name">Name</label>
+          <input id="input-name" name="name" required maxlength="255" />
+        </div>
+        <div class="form-field">
+          <label for="input-quantity">Quantity</label>
+          <input id="input-quantity" name="quantity" type="number" min="0" value="0" required />
+        </div>
+        <div class="form-field">
+          <label for="input-unitPrice">Unit price</label>
+          <input id="input-unitPrice" name="unitPrice" type="number" min="0" step="0.01" value="0" required />
+        </div>
+        <div class="form-field">
+          <label for="input-category">Category</label>
+          <input id="input-category" name="category" maxlength="128" value="General" />
+        </div>
         <div class="form-actions">
           <button type="submit">Add to inventory</button>
         </div>
@@ -31,9 +46,10 @@
     <section class="card" aria-labelledby="report-heading">
       <h2 id="report-heading">Report</h2>
       <div class="report-controls">
-        <label>Low-stock threshold
+        <div class="form-field inline-field">
+          <label for="threshold">Low-stock threshold</label>
           <input id="threshold" type="number" min="0" value="5" />
-        </label>
+        </div>
         <button type="button" id="refresh-report">Refresh report</button>
         <button type="button" id="export-csv">Download CSV</button>
       </div>
@@ -58,13 +74,12 @@
       <div class="table-header-controls">
         <h2 id="list-heading" style="margin: 0;">All items</h2>
         <div class="table-controls">
+          <label for="search-input" class="sr-only">Search SKU or Name</label>
           <input type="text" id="search-input" placeholder="Search SKU or Name..." autocomplete="off" />
+          
+          <label for="category-filter" class="sr-only">Category Filter</label>
           <select id="category-filter">
             <option value="all">All Categories</option>
-            <option value="General">General</option>
-            <option value="Fruit">Fruit</option>
-            <option value="Electronics">Electronics</option>
-            <option value="Groceries">Groceries</option>
           </select>
         </div>
       </div>

@@ -3,11 +3,13 @@ package com.example.inventory.service;
 import com.example.inventory.dto.AdjustQuantityRequest;
 import com.example.inventory.dto.CreateItemRequest;
 import com.example.inventory.dto.PageResponse;
+import com.example.inventory.event.LowStockEvent;
 import com.example.inventory.model.InventoryReport;
 import com.example.inventory.model.Item;
 import com.example.inventory.repository.InventoryJdbcRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,9 +23,11 @@ public class InventoryService {
 
     private static final Logger logger = LoggerFactory.getLogger(InventoryService.class);
     private final InventoryJdbcRepository repository;
+    private final ApplicationEventPublisher eventPublisher;
 
-    public InventoryService(InventoryJdbcRepository repository) {
+    public InventoryService(InventoryJdbcRepository repository, ApplicationEventPublisher eventPublisher) {
         this.repository = repository;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional(readOnly = true)
@@ -40,13 +44,18 @@ public class InventoryService {
 
     public Item addItem(CreateItemRequest request) {
         logger.info("Adding new item with SKU: {}", request.sku());
-        return repository.insert(
+        Item item = repository.insert(
                 request.sku(),
                 request.name(),
                 request.quantity(),
                 request.unitPrice(),
                 request.category()
         );
+        if (item.quantity() < 5) {
+            logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", item.sku(), item.quantity());
+            eventPublisher.publishEvent(new LowStockEvent(this, item));
+        }
+        return item;
     }
 
     public boolean removeItem(long id) {
@@ -56,7 +65,15 @@ public class InventoryService {
 
     public Optional<Item> adjustStock(long id, AdjustQuantityRequest request) {
         logger.info("Adjusting stock for ID {}: delta={}", id, request.delta());
-        return repository.adjustQuantity(id, request.delta());
+        Optional<Item> result = repository.adjustQuantity(id, request.delta());
+        if (result.isPresent()) {
+            Item item = result.get();
+            if (item.quantity() < 5) {
+                logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", item.sku(), item.quantity());
+                eventPublisher.publishEvent(new LowStockEvent(this, item));
+            }
+        }
+        return result;
     }
 
     @Transactional(readOnly = true)
@@ -71,5 +88,10 @@ public class InventoryService {
         logger.info("Streaming all items as CSV");
         repository.streamAll(writer);
     }
-}
 
+    @Transactional(readOnly = true)
+    public List<String> getCategories() {
+        logger.info("Fetching distinct active categories");
+        return repository.findDistinctCategories();
+    }
+}
