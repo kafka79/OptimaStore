@@ -113,4 +113,64 @@ class InventoryJdbcRepositoryTests {
         assertEquals(20, readded.quantity());
         assertFalse(readded.archived());
     }
+
+    @Test
+    void testAuditLogging() {
+        Item item = repository.insert("SKU-LOG", "Logger Item", 10, new BigDecimal("2.50"), "General");
+        
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM stock_transactions WHERE sku = 'SKU-LOG'",
+                Integer.class
+        );
+        assertEquals(1, count);
+        
+        java.util.Map<String, Object> log = jdbcTemplate.queryForMap(
+                "SELECT * FROM stock_transactions WHERE sku = 'SKU-LOG' AND reason = 'INITIAL_STOCK'"
+        );
+        assertEquals(10, ((Number) log.get("delta")).intValue());
+        assertEquals(0, ((Number) log.get("previous_quantity")).intValue());
+        assertEquals(10, ((Number) log.get("new_quantity")).intValue());
+
+        repository.adjustQuantity(item.id(), 5);
+        count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM stock_transactions WHERE sku = 'SKU-LOG'",
+                Integer.class
+        );
+        assertEquals(2, count);
+        
+        log = jdbcTemplate.queryForMap(
+                "SELECT * FROM stock_transactions WHERE sku = 'SKU-LOG' AND reason = 'RESTOCK'"
+        );
+        assertEquals(5, ((Number) log.get("delta")).intValue());
+        assertEquals(10, ((Number) log.get("previous_quantity")).intValue());
+        assertEquals(15, ((Number) log.get("new_quantity")).intValue());
+
+        repository.deleteById(item.id());
+        count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM stock_transactions WHERE sku = 'SKU-LOG'",
+                Integer.class
+        );
+        assertEquals(3, count);
+        
+        log = jdbcTemplate.queryForMap(
+                "SELECT * FROM stock_transactions WHERE sku = 'SKU-LOG' AND reason = 'ARCHIVED'"
+        );
+        assertEquals(-15, ((Number) log.get("delta")).intValue());
+        assertEquals(15, ((Number) log.get("previous_quantity")).intValue());
+        assertEquals(0, ((Number) log.get("new_quantity")).intValue());
+
+        repository.insert("SKU-LOG", "Reactivated Logger", 25, new BigDecimal("2.50"), "General");
+        count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM stock_transactions WHERE sku = 'SKU-LOG'",
+                Integer.class
+        );
+        assertEquals(4, count);
+        
+        log = jdbcTemplate.queryForMap(
+                "SELECT * FROM stock_transactions WHERE sku = 'SKU-LOG' AND reason = 'REACTIVATE'"
+        );
+        assertEquals(25, ((Number) log.get("delta")).intValue());
+        assertEquals(0, ((Number) log.get("previous_quantity")).intValue());
+        assertEquals(25, ((Number) log.get("new_quantity")).intValue());
+    }
 }

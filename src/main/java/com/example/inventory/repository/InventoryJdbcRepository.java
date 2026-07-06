@@ -3,6 +3,8 @@ package com.example.inventory.repository;
 import com.example.inventory.exception.DuplicateSkuException;
 import com.example.inventory.model.InventoryReport;
 import com.example.inventory.model.Item;
+import com.example.inventory.model.OutboxEvent;
+import com.example.inventory.context.UserContext;
 import com.example.inventory.dto.PageResponse;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
@@ -129,6 +131,41 @@ public class InventoryJdbcRepository {
         }
     }
 
+    public Optional<Item> findByIdForUpdate(long id) {
+        String sql = """
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived
+                FROM items WHERE id = :id AND archived = false FOR UPDATE
+                """;
+        MapSqlParameterSource params = new MapSqlParameterSource("id", id);
+        try {
+            List<Item> results = jdbcTemplate.query(sql, params, itemRowMapper);
+            return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to load item for update", e);
+        }
+    }
+
+    private void logTransaction(long itemId, String sku, int delta, int previousQuantity, int newQuantity, String reason) {
+        String sql = """
+                INSERT INTO stock_transactions (item_id, sku, delta, previous_quantity, new_quantity, reason, operator, created_at)
+                VALUES (:itemId, :sku, :delta, :previousQuantity, :newQuantity, :reason, :operator, :createdAt)
+                """;
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("itemId", itemId)
+                .addValue("sku", sku)
+                .addValue("delta", delta)
+                .addValue("previousQuantity", previousQuantity)
+                .addValue("newQuantity", newQuantity)
+                .addValue("reason", reason)
+                .addValue("operator", UserContext.getCurrentUser())
+                .addValue("createdAt", Timestamp.from(Instant.now()));
+        try {
+            jdbcTemplate.update(sql, params);
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to log stock transaction for SKU: " + sku, e);
+        }
+    }
+
     public Optional<Item> findArchivedBySku(String sku) {
         String sql = """
                 SELECT id, sku, name, quantity, unit_price, category, updated_at, archived
@@ -144,6 +181,14 @@ public class InventoryJdbcRepository {
     }
 
     public Item reactivateItem(long id, String name, int quantity, BigDecimal unitPrice, String category) {
+        String selectSql = "SELECT id, sku, name, quantity, unit_price, category, updated_at, archived FROM items WHERE id = :id FOR UPDATE";
+        MapSqlParameterSource selectParams = new MapSqlParameterSource("id", id);
+        List<Item> archivedResults = jdbcTemplate.query(selectSql, selectParams, itemRowMapper);
+        if (archivedResults.isEmpty()) {
+            throw new IllegalStateException("Failed to locate archived item for reactivation");
+        }
+        Item archived = archivedResults.get(0);
+
         String sql = """
                 UPDATE items
                 SET name = :name, quantity = :quantity, unit_price = :unitPrice, category = :category, updated_at = :updatedAt, archived = false
@@ -158,6 +203,7 @@ public class InventoryJdbcRepository {
                 .addValue("id", id);
         try {
             jdbcTemplate.update(sql, params);
+            logTransaction(id, archived.sku(), quantity, 0, quantity, "REACTIVATE");
             return findById(id).orElseThrow(() -> new IllegalStateException("Failed to load reactivated item"));
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to reactivate item", e);
@@ -188,6 +234,7 @@ public class InventoryJdbcRepository {
         try {
             jdbcTemplate.update(sql, params, keyHolder);
             long id = extractId(keyHolder);
+            logTransaction(id, sku.trim(), quantity, 0, quantity, "INITIAL_STOCK");
             return new Item(id, sku.trim(), name.trim(), quantity, unitPrice, category.trim(), now, false);
         } catch (org.springframework.dao.DuplicateKeyException e) {
             throw new DuplicateSkuException(sku.trim(), e);
@@ -197,44 +244,54 @@ public class InventoryJdbcRepository {
     }
 
     public boolean deleteById(long id) {
+        Optional<Item> currentOpt = findByIdForUpdate(id);
+        if (currentOpt.isEmpty()) {
+            return false;
+        }
+        Item current = currentOpt.get();
+
         String sql = "UPDATE items SET archived = true, updated_at = :updatedAt WHERE id = :id AND archived = false";
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("updatedAt", Timestamp.from(Instant.now()))
                 .addValue("id", id);
         try {
-            return jdbcTemplate.update(sql, params) > 0;
+            boolean deleted = jdbcTemplate.update(sql, params) > 0;
+            if (deleted) {
+                logTransaction(id, current.sku(), -current.quantity(), current.quantity(), 0, "ARCHIVED");
+            }
+            return deleted;
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to soft delete item", e);
         }
     }
 
     public Optional<Item> adjustQuantity(long id, int delta) {
-        Optional<Item> current = findById(id);
-        if (current.isEmpty()) {
+        Optional<Item> currentOpt = findByIdForUpdate(id);
+        if (currentOpt.isEmpty()) {
             return Optional.empty();
         }
-        if (current.get().quantity() + delta < 0) {
-            throw new IllegalArgumentException("Insufficient stock: Current quantity is " + current.get().quantity() + ", adjustment was " + delta);
+        Item current = currentOpt.get();
+        int previousQty = current.quantity();
+        int newQty = previousQty + delta;
+        if (newQty < 0) {
+            throw new IllegalArgumentException("Insufficient stock: Current quantity is " + previousQty + ", adjustment was " + delta);
         }
 
         String sql = """
                 UPDATE items
-                SET quantity = quantity + :delta, updated_at = :updatedAt
-                WHERE id = :id AND quantity + :delta >= 0 AND archived = false
+                SET quantity = :newQuantity, updated_at = :updatedAt
+                WHERE id = :id AND archived = false
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource()
-                .addValue("delta", delta)
+                .addValue("newQuantity", newQty)
                 .addValue("updatedAt", Timestamp.from(Instant.now()))
                 .addValue("id", id);
         try {
             int updated = jdbcTemplate.update(sql, params);
             if (updated == 0) {
-                Optional<Item> recheck = findById(id);
-                if (recheck.isEmpty()) {
-                    return Optional.empty();
-                }
-                throw new IllegalArgumentException("Concurrency conflict, insufficient stock");
+                return Optional.empty();
             }
+            logTransaction(id, current.sku(), delta, previousQty, newQty, delta >= 0 ? "RESTOCK" : "DISPATCH");
             return findById(id);
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to adjust quantity", e);
@@ -319,5 +376,55 @@ public class InventoryJdbcRepository {
             return ((Number) firstValue).longValue();
         }
         throw new IllegalStateException("No numeric generated key found");
+    }
+
+    public void insertOutboxEvent(String aggregateType, String aggregateId, String eventType, String payload) {
+        String sql = """
+                INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, status)
+                VALUES (:aggregateType, :aggregateId, :eventType, :payload, 'PENDING')
+                """;
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("aggregateType", aggregateType)
+                .addValue("aggregateId", aggregateId)
+                .addValue("eventType", eventType)
+                .addValue("payload", payload);
+        try {
+            jdbcTemplate.update(sql, params);
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to insert outbox event", e);
+        }
+    }
+
+    public List<OutboxEvent> findPendingOutboxEvents() {
+        String sql = """
+                SELECT id, aggregate_type, aggregate_id, event_type, payload, status, created_at
+                FROM outbox_events
+                WHERE status = 'PENDING'
+                ORDER BY created_at
+                FOR UPDATE
+                """;
+        try {
+            return jdbcTemplate.query(sql, new MapSqlParameterSource(), (rs, rowNum) -> new OutboxEvent(
+                    rs.getLong("id"),
+                    rs.getString("aggregate_type"),
+                    rs.getString("aggregate_id"),
+                    rs.getString("event_type"),
+                    rs.getString("payload"),
+                    rs.getString("status"),
+                    rs.getTimestamp("created_at").toInstant()
+            ));
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to load pending outbox events", e);
+        }
+    }
+
+    public void markOutboxEventProcessed(long id) {
+        String sql = "UPDATE outbox_events SET status = 'PROCESSED' WHERE id = :id";
+        MapSqlParameterSource params = new MapSqlParameterSource("id", id);
+        try {
+            jdbcTemplate.update(sql, params);
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to update outbox event status", e);
+        }
     }
 }

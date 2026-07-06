@@ -83,11 +83,7 @@ public class InventoryService {
         return repository.buildReport(threshold);
     }
 
-    @Transactional(readOnly = true)
-    public void streamAllItems(PrintWriter writer) {
-        logger.info("Streaming all items as CSV");
-        repository.streamAll(writer);
-    }
+
 
     @Transactional(readOnly = true)
     public List<String> getCategories() {

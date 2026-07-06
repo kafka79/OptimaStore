@@ -1,8 +1,11 @@
-const api = (path, options = {}) =>
-  fetch(path, {
-    headers: { "Content-Type": "application/json", ...options.headers },
+const api = (path, options = {}) => {
+  const operatorSelect = document.getElementById("operator-select");
+  const userId = operatorSelect ? operatorSelect.value : "anonymous";
+  return fetch(path, {
+    headers: { "Content-Type": "application/json", "X-User-Id": userId, ...options.headers },
     ...options,
   });
+};
 
 function money(n) {
   const x = Number(n);
@@ -134,33 +137,96 @@ function renderItems(pageResponse) {
 
   if (items.length === 0) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td colspan="7" style="text-align: center; padding: 3rem 1.5rem;">
-        <div class="empty-state">
-          <div class="empty-icon">🔍</div>
-          <p class="empty-title" style="margin: 0.5rem 0 0.25rem; font-weight: 600; color: var(--text);">No items found</p>
-          <p class="empty-subtitle" style="margin: 0; font-size: 0.85rem; color: var(--muted);">We couldn't find any items matching your filters.</p>
-        </div>
-      </td>
-    `;
+    const td = document.createElement("td");
+    td.colSpan = 7;
+    td.style.textAlign = "center";
+    td.style.padding = "3rem 1.5rem";
+
+    const divEmpty = document.createElement("div");
+    divEmpty.className = "empty-state";
+
+    const divIcon = document.createElement("div");
+    divIcon.className = "empty-icon";
+    divIcon.textContent = "🔍";
+    divEmpty.appendChild(divIcon);
+
+    const pTitle = document.createElement("p");
+    pTitle.className = "empty-title";
+    pTitle.style.margin = "0.5rem 0 0.25rem";
+    pTitle.style.fontWeight = "600";
+    pTitle.style.color = "var(--text)";
+    pTitle.textContent = "No items found";
+    divEmpty.appendChild(pTitle);
+
+    const pSub = document.createElement("p");
+    pSub.className = "empty-subtitle";
+    pSub.style.margin = "0";
+    pSub.style.fontSize = "0.85rem";
+    pSub.style.color = "var(--muted)";
+    pSub.textContent = "We couldn't find any items matching your filters.";
+    divEmpty.appendChild(pSub);
+
+    td.appendChild(divEmpty);
+    tr.appendChild(td);
     tbody.appendChild(tr);
     return;
   }
 
   for (const it of items) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHtml(it.sku)}</td>
-      <td>${escapeHtml(it.name)}</td>
-      <td>${it.quantity}</td>
-      <td>${money(it.unitPrice)}</td>
-      <td>${escapeHtml(it.category)}</td>
-      <td class="adjust-cell">
-        <input type="number" class="delta-input" data-id="${it.id}" value="1" min="-99999" max="99999" aria-label="Delta for ${escapeHtml(it.sku)}" />
-        <button type="button" class="secondary apply-delta" data-id="${it.id}">Apply Δ</button>
-      </td>
-      <td><button type="button" class="danger delete-item" data-id="${it.id}">Remove</button></td>
-    `;
+
+    const tdSku = document.createElement("td");
+    tdSku.textContent = it.sku;
+    tr.appendChild(tdSku);
+
+    const tdName = document.createElement("td");
+    tdName.textContent = it.name;
+    tr.appendChild(tdName);
+
+    const tdQty = document.createElement("td");
+    tdQty.className = "qty-cell";
+    tdQty.textContent = it.quantity;
+    tr.appendChild(tdQty);
+
+    const tdPrice = document.createElement("td");
+    tdPrice.textContent = money(it.unitPrice);
+    tr.appendChild(tdPrice);
+
+    const tdCategory = document.createElement("td");
+    tdCategory.textContent = it.category;
+    tr.appendChild(tdCategory);
+
+    const tdAdjust = document.createElement("td");
+    tdAdjust.className = "adjust-cell";
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = "delta-input";
+    input.dataset.id = it.id;
+    input.value = "1";
+    input.min = "-99999";
+    input.max = "99999";
+    input.setAttribute("aria-label", `Delta for ${it.sku}`);
+    tdAdjust.appendChild(input);
+
+    const btnApply = document.createElement("button");
+    btnApply.type = "button";
+    btnApply.className = "secondary apply-delta";
+    btnApply.dataset.id = it.id;
+    btnApply.textContent = "Apply Δ";
+    tdAdjust.appendChild(btnApply);
+
+    tr.appendChild(tdAdjust);
+
+    const tdDelete = document.createElement("td");
+    const btnDelete = document.createElement("button");
+    btnDelete.type = "button";
+    btnDelete.className = "danger delete-item";
+    btnDelete.dataset.id = it.id;
+    btnDelete.textContent = "Remove";
+    tdDelete.appendChild(btnDelete);
+    tr.appendChild(tdDelete);
+
     tbody.appendChild(tr);
   }
 
@@ -176,17 +242,12 @@ function renderItems(pageResponse) {
 
   tbody.querySelectorAll(".delete-item").forEach((btn) => {
     btn.addEventListener("click", () => {
-      showConfirmModal(`Remove item "${btn.closest('tr').cells[1].textContent}" from inventory?`, () => {
+      const itemName = btn.closest('tr').cells[1].textContent;
+      showConfirmModal(`Remove item "${itemName}" from inventory?`, () => {
         deleteItem(btn.dataset.id);
       });
     });
   });
-}
-
-function escapeHtml(s) {
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
 }
 
 function renderReport(report) {
@@ -305,8 +366,19 @@ async function adjustQuantity(id, delta) {
     body: JSON.stringify({ delta }),
   });
   if (res.ok) {
+    const updatedItem = await res.json();
     setMessage(msg, "Stock updated.", "ok");
-    await refreshAll();
+    
+    // Perform in-place DOM update of the modified item to avoid full table redraw
+    const row = document.querySelector(`.delta-input[data-id="${id}"]`).closest("tr");
+    if (row) {
+      row.querySelector(".qty-cell").textContent = updatedItem.quantity;
+    }
+    
+    // Update the dashboard reports asynchronously without items table reload
+    const th = document.getElementById("threshold").value || "5";
+    const report = await loadReport(th);
+    renderReport(report);
   } else if (res.status === 409) {
     setMessage(msg, "Adjust failed: Quantity cannot drop below 0.", "error");
     await refreshAll();

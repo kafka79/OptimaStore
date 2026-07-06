@@ -94,12 +94,41 @@ public class InventoryController {
     @GetMapping("/export")
     public void exportCsv(HttpServletResponse response) throws IOException {
         logger.info("REST request to export CSV");
+        
         response.setContentType("text/csv");
+        response.setCharacterEncoding("UTF-8");
         response.setHeader("Content-Disposition", "attachment; filename=\"inventory-export.csv\"");
+        
         try (PrintWriter writer = response.getWriter()) {
             writer.println("id,sku,name,quantity,unitPrice,category,updatedAt");
-            inventoryService.streamAllItems(writer);
+            
+            int page = 0;
+            int size = 500;
+            PageResponse<Item> pageResponse;
+            do {
+                pageResponse = inventoryService.listItems(page, size, null, null);
+                for (Item item : pageResponse.content()) {
+                    writer.println(String.format("%s,%s,%s,%d,%s,%s,%s",
+                            item.id() != null ? item.id().toString() : "",
+                            csvEscape(item.sku()),
+                            csvEscape(item.name()),
+                            item.quantity(),
+                            item.unitPrice() != null ? item.unitPrice().toString() : "0.00",
+                            csvEscape(item.category()),
+                            item.updatedAt() != null ? item.updatedAt().toString() : ""
+                    ));
+                }
+                page++;
+            } while (page < pageResponse.totalPages());
         }
+    }
+
+    private String csvEscape(String s) {
+        if (s == null) return "";
+        if (s.contains(",") || s.contains("\"") || s.contains("\n") || s.contains("\r")) {
+            return "\"" + s.replace("\"", "\"\"") + "\"";
+        }
+        return s;
     }
 
     @GetMapping("/categories")
