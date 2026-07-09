@@ -31,3 +31,7 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     status VARCHAR(64) NOT NULL DEFAULT 'PENDING',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_items_sku ON items (sku);
+CREATE INDEX IF NOT EXISTS idx_items_category ON items (category);
+CREATE INDEX IF NOT EXISTS idx_items_name ON items (name);

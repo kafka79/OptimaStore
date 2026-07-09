@@ -6,7 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
 
@@ -16,27 +16,50 @@ public class OutboxProcessor {
     private static final Logger logger = LoggerFactory.getLogger(OutboxProcessor.class);
     private final InventoryJdbcRepository repository;
     private final MessagePublisher messagePublisher;
+    private final TransactionTemplate transactionTemplate;
 
-    public OutboxProcessor(InventoryJdbcRepository repository, MessagePublisher messagePublisher) {
+    public OutboxProcessor(InventoryJdbcRepository repository, MessagePublisher messagePublisher, TransactionTemplate transactionTemplate) {
         this.repository = repository;
         this.messagePublisher = messagePublisher;
+        this.transactionTemplate = transactionTemplate;
     }
 
-    @Scheduled(fixedDelay = 5000) // Runs every 5 seconds
-    @Transactional
+    @Scheduled(fixedDelayString = "${outbox.scheduler.delay:5000}") // Runs every 5 seconds
     public void processOutbox() {
-        List<OutboxEvent> events = repository.findPendingOutboxEvents();
-        if (events.isEmpty()) {
+        // 1. Lock next pending events and change their status to PROCESSING in a short transaction
+        List<OutboxEvent> events = transactionTemplate.execute(status -> {
+            List<OutboxEvent> pending = repository.findPendingOutboxEvents();
+            if (pending != null && !pending.isEmpty()) {
+                for (OutboxEvent event : pending) {
+                    repository.updateOutboxEventStatus(event.id(), "PROCESSING");
+                }
+            }
+            return pending;
+        });
+
+        if (events == null || events.isEmpty()) {
             return;
         }
+
         logger.info("Found {} pending outbox events. Publishing to message broker...", events.size());
+        
+        // 2. Publish outside the transaction context
         for (OutboxEvent event : events) {
             try {
                 messagePublisher.publish(event.eventType(), event.payload());
-                repository.markOutboxEventProcessed(event.id());
+                
+                // 3. Mark processed in a separate transaction
+                transactionTemplate.executeWithoutResult(status -> {
+                    repository.markOutboxEventProcessed(event.id());
+                });
                 logger.info("Successfully processed outbox event ID [{}].", event.id());
             } catch (Exception e) {
                 logger.error("Failed to publish outbox event ID [{}]: {}", event.id(), e.getMessage());
+                
+                // 4. Revert status back to PENDING so it can be retried in a separate transaction
+                transactionTemplate.executeWithoutResult(status -> {
+                    repository.updateOutboxEventStatus(event.id(), "PENDING");
+                });
             }
         }
     }

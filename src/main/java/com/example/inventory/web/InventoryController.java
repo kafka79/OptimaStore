@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -51,10 +52,13 @@ public class InventoryController {
     }
 
     @PostMapping
-    public ResponseEntity<Item> create(@Valid @RequestBody CreateItemRequest body) {
+    public ResponseEntity<Item> create(
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @Valid @RequestBody CreateItemRequest body
+    ) {
         logger.info("REST request to create item: SKU={}", body.sku());
         try {
-            Item created = inventoryService.addItem(body);
+            Item created = inventoryService.addItem(body, getOperator(authHeader));
             return ResponseEntity.status(HttpStatus.CREATED).body(created);
         } catch (DuplicateSkuException e) {
             logger.warn("SKU duplicate attempt: {}", body.sku());
@@ -63,9 +67,12 @@ public class InventoryController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@PathVariable long id) {
+    public ResponseEntity<Void> delete(
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @PathVariable long id
+    ) {
         logger.info("REST request to delete item: id={}", id);
-        if (inventoryService.removeItem(id)) {
+        if (inventoryService.removeItem(id, getOperator(authHeader))) {
             return ResponseEntity.noContent().build();
         }
         logger.warn("Item to delete not found: id={}", id);
@@ -74,12 +81,13 @@ public class InventoryController {
 
     @PatchMapping("/{id}/quantity")
     public ResponseEntity<Item> adjustQuantity(
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
             @PathVariable long id,
             @Valid @RequestBody AdjustQuantityRequest body
     ) {
         logger.info("REST request to adjust item quantity: id={}, delta={}", id, body.delta());
         try {
-            return inventoryService.adjustStock(id, body)
+            return inventoryService.adjustStock(id, body, getOperator(authHeader))
                     .map(ResponseEntity::ok)
                     .orElseGet(() -> {
                         logger.warn("Failed to adjust item quantity: id={}", id);
@@ -93,7 +101,7 @@ public class InventoryController {
 
     @GetMapping("/export")
     public void exportCsv(HttpServletResponse response) throws IOException {
-        logger.info("REST request to export CSV");
+        logger.info("REST request to export CSV via stream");
         
         response.setContentType("text/csv");
         response.setCharacterEncoding("UTF-8");
@@ -101,39 +109,30 @@ public class InventoryController {
         
         try (PrintWriter writer = response.getWriter()) {
             writer.println("id,sku,name,quantity,unitPrice,category,updatedAt");
-            
-            int page = 0;
-            int size = 500;
-            PageResponse<Item> pageResponse;
-            do {
-                pageResponse = inventoryService.listItems(page, size, null, null);
-                for (Item item : pageResponse.content()) {
-                    writer.println(String.format("%s,%s,%s,%d,%s,%s,%s",
-                            item.id() != null ? item.id().toString() : "",
-                            csvEscape(item.sku()),
-                            csvEscape(item.name()),
-                            item.quantity(),
-                            item.unitPrice() != null ? item.unitPrice().toString() : "0.00",
-                            csvEscape(item.category()),
-                            item.updatedAt() != null ? item.updatedAt().toString() : ""
-                    ));
-                }
-                page++;
-            } while (page < pageResponse.totalPages());
+            inventoryService.exportToCsv(writer);
         }
-    }
-
-    private String csvEscape(String s) {
-        if (s == null) return "";
-        if (s.contains(",") || s.contains("\"") || s.contains("\n") || s.contains("\r")) {
-            return "\"" + s.replace("\"", "\"\"") + "\"";
-        }
-        return s;
     }
 
     @GetMapping("/categories")
     public List<String> categories() {
         logger.info("REST request to list distinct categories");
         return inventoryService.getCategories();
+    }
+
+    private String getOperator(String authHeader) {
+        if (authHeader != null && authHeader.toLowerCase().startsWith("basic ")) {
+            try {
+                String base64Credentials = authHeader.substring(6).trim();
+                byte[] decoded = java.util.Base64.getDecoder().decode(base64Credentials);
+                String credentials = new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
+                int colonIndex = credentials.indexOf(":");
+                if (colonIndex > 0) {
+                    return credentials.substring(0, colonIndex);
+                }
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+        return "anonymous";
     }
 }

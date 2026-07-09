@@ -1,8 +1,9 @@
 const api = (path, options = {}) => {
   const operatorSelect = document.getElementById("operator-select");
   const userId = operatorSelect ? operatorSelect.value : "anonymous";
+  const authHeader = "Basic " + btoa(userId + ":password");
   return fetch(path, {
-    headers: { "Content-Type": "application/json", "X-User-Id": userId, ...options.headers },
+    headers: { "Content-Type": "application/json", "Authorization": authHeader, ...options.headers },
     ...options,
   });
 };

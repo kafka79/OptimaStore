@@ -64,29 +64,29 @@ class InventoryServiceTests {
     void testAddItem() {
         CreateItemRequest request = new CreateItemRequest("SKU1", "Name1", 10, BigDecimal.TEN, "Category");
         Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false);
-        when(repository.insert("SKU1", "Name1", 10, BigDecimal.TEN, "Category")).thenReturn(item);
+        when(repository.insert(eq("SKU1"), eq("Name1"), eq(10), eq(BigDecimal.TEN), eq("Category"), anyString())).thenReturn(item);
 
-        Item result = service.addItem(request);
+        Item result = service.addItem(request, "operator");
         assertNotNull(result);
         assertEquals("SKU1", result.sku());
     }
 
     @Test
     void testRemoveItem() {
-        when(repository.deleteById(1L)).thenReturn(true);
-        assertTrue(service.removeItem(1L));
+        when(repository.deleteById(eq(1L), anyString())).thenReturn(true);
+        assertTrue(service.removeItem(1L, "operator"));
 
-        when(repository.deleteById(2L)).thenReturn(false);
-        assertFalse(service.removeItem(2L));
+        when(repository.deleteById(eq(2L), anyString())).thenReturn(false);
+        assertFalse(service.removeItem(2L, "operator"));
     }
 
     @Test
     void testAdjustStock() {
         AdjustQuantityRequest request = new AdjustQuantityRequest(5);
         Item item = new Item(1L, "SKU1", "Name1", 15, BigDecimal.TEN, "Category", Instant.now(), false);
-        when(repository.adjustQuantity(1L, 5)).thenReturn(Optional.of(item));
+        when(repository.adjustQuantity(eq(1L), eq(5), anyString())).thenReturn(Optional.of(item));
 
-        Optional<Item> result = service.adjustStock(1L, request);
+        Optional<Item> result = service.adjustStock(1L, request, "operator");
         assertTrue(result.isPresent());
         assertEquals(15, result.get().quantity());
     }

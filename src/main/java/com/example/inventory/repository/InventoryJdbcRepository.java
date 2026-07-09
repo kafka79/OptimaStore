@@ -4,7 +4,6 @@ import com.example.inventory.exception.DuplicateSkuException;
 import com.example.inventory.model.InventoryReport;
 import com.example.inventory.model.Item;
 import com.example.inventory.model.OutboxEvent;
-import com.example.inventory.context.UserContext;
 import com.example.inventory.dto.PageResponse;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
@@ -145,7 +144,7 @@ public class InventoryJdbcRepository {
         }
     }
 
-    private void logTransaction(long itemId, String sku, int delta, int previousQuantity, int newQuantity, String reason) {
+    private void logTransaction(long itemId, String sku, int delta, int previousQuantity, int newQuantity, String reason, String operator) {
         String sql = """
                 INSERT INTO stock_transactions (item_id, sku, delta, previous_quantity, new_quantity, reason, operator, created_at)
                 VALUES (:itemId, :sku, :delta, :previousQuantity, :newQuantity, :reason, :operator, :createdAt)
@@ -157,7 +156,7 @@ public class InventoryJdbcRepository {
                 .addValue("previousQuantity", previousQuantity)
                 .addValue("newQuantity", newQuantity)
                 .addValue("reason", reason)
-                .addValue("operator", UserContext.getCurrentUser())
+                .addValue("operator", operator)
                 .addValue("createdAt", Timestamp.from(Instant.now()));
         try {
             jdbcTemplate.update(sql, params);
@@ -180,7 +179,7 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public Item reactivateItem(long id, String name, int quantity, BigDecimal unitPrice, String category) {
+    public Item reactivateItem(long id, String name, int quantity, BigDecimal unitPrice, String category, String operator) {
         String selectSql = "SELECT id, sku, name, quantity, unit_price, category, updated_at, archived FROM items WHERE id = :id FOR UPDATE";
         MapSqlParameterSource selectParams = new MapSqlParameterSource("id", id);
         List<Item> archivedResults = jdbcTemplate.query(selectSql, selectParams, itemRowMapper);
@@ -203,19 +202,14 @@ public class InventoryJdbcRepository {
                 .addValue("id", id);
         try {
             jdbcTemplate.update(sql, params);
-            logTransaction(id, archived.sku(), quantity, 0, quantity, "REACTIVATE");
+            logTransaction(id, archived.sku(), quantity, 0, quantity, "REACTIVATE", operator);
             return findById(id).orElseThrow(() -> new IllegalStateException("Failed to load reactivated item"));
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to reactivate item", e);
         }
     }
 
-    public Item insert(String sku, String name, int quantity, BigDecimal unitPrice, String category) {
-        Optional<Item> archivedItem = findArchivedBySku(sku);
-        if (archivedItem.isPresent()) {
-            return reactivateItem(archivedItem.get().id(), name, quantity, unitPrice, category);
-        }
-
+    public Item insert(String sku, String name, int quantity, BigDecimal unitPrice, String category, String operator) {
         String sql = """
                 INSERT INTO items (sku, name, quantity, unit_price, category, updated_at, archived)
                 VALUES (:sku, :name, :quantity, :unitPrice, :category, :updatedAt, :archived)
@@ -234,16 +228,20 @@ public class InventoryJdbcRepository {
         try {
             jdbcTemplate.update(sql, params, keyHolder);
             long id = extractId(keyHolder);
-            logTransaction(id, sku.trim(), quantity, 0, quantity, "INITIAL_STOCK");
+            logTransaction(id, sku.trim(), quantity, 0, quantity, "INITIAL_STOCK", operator);
             return new Item(id, sku.trim(), name.trim(), quantity, unitPrice, category.trim(), now, false);
         } catch (org.springframework.dao.DuplicateKeyException e) {
+            Optional<Item> archivedItem = findArchivedBySku(sku);
+            if (archivedItem.isPresent()) {
+                return reactivateItem(archivedItem.get().id(), name, quantity, unitPrice, category, operator);
+            }
             throw new DuplicateSkuException(sku.trim(), e);
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to insert item", e);
         }
     }
 
-    public boolean deleteById(long id) {
+    public boolean deleteById(long id, String operator) {
         Optional<Item> currentOpt = findByIdForUpdate(id);
         if (currentOpt.isEmpty()) {
             return false;
@@ -257,7 +255,7 @@ public class InventoryJdbcRepository {
         try {
             boolean deleted = jdbcTemplate.update(sql, params) > 0;
             if (deleted) {
-                logTransaction(id, current.sku(), -current.quantity(), current.quantity(), 0, "ARCHIVED");
+                logTransaction(id, current.sku(), -current.quantity(), current.quantity(), 0, "ARCHIVED", operator);
             }
             return deleted;
         } catch (org.springframework.dao.DataAccessException e) {
@@ -265,7 +263,7 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public Optional<Item> adjustQuantity(long id, int delta) {
+    public Optional<Item> adjustQuantity(long id, int delta, String operator) {
         Optional<Item> currentOpt = findByIdForUpdate(id);
         if (currentOpt.isEmpty()) {
             return Optional.empty();
@@ -291,7 +289,7 @@ public class InventoryJdbcRepository {
             if (updated == 0) {
                 return Optional.empty();
             }
-            logTransaction(id, current.sku(), delta, previousQty, newQty, delta >= 0 ? "RESTOCK" : "DISPATCH");
+            logTransaction(id, current.sku(), delta, previousQty, newQty, delta >= 0 ? "RESTOCK" : "DISPATCH", operator);
             return findById(id);
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to adjust quantity", e);
@@ -401,7 +399,8 @@ public class InventoryJdbcRepository {
                 FROM outbox_events
                 WHERE status = 'PENDING'
                 ORDER BY created_at
-                FOR UPDATE
+                LIMIT 100
+                FOR UPDATE SKIP LOCKED
                 """;
         try {
             return jdbcTemplate.query(sql, new MapSqlParameterSource(), (rs, rowNum) -> new OutboxEvent(
@@ -418,13 +417,25 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public void markOutboxEventProcessed(long id) {
-        String sql = "UPDATE outbox_events SET status = 'PROCESSED' WHERE id = :id";
-        MapSqlParameterSource params = new MapSqlParameterSource("id", id);
+    public void updateOutboxEventStatus(long id, String status) {
+        String sql = "UPDATE outbox_events SET status = :status WHERE id = :id";
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("id", id)
+                .addValue("status", status);
         try {
             jdbcTemplate.update(sql, params);
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to update outbox event status", e);
+        }
+    }
+
+    public void markOutboxEventProcessed(long id) {
+        String sql = "DELETE FROM outbox_events WHERE id = :id";
+        MapSqlParameterSource params = new MapSqlParameterSource("id", id);
+        try {
+            jdbcTemplate.update(sql, params);
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to delete outbox event", e);
         }
     }
 }
