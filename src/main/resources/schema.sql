@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS items (
     category VARCHAR(128) NOT NULL DEFAULT 'General',
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     archived BOOLEAN NOT NULL DEFAULT FALSE,
+    low_stock_threshold INT NOT NULL DEFAULT 5,
     CONSTRAINT uk_items_sku UNIQUE (sku)
 );
 
@@ -35,3 +36,4 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 CREATE INDEX IF NOT EXISTS idx_items_sku ON items (sku);
 CREATE INDEX IF NOT EXISTS idx_items_category ON items (category);
 CREATE INDEX IF NOT EXISTS idx_items_name ON items (name);
+CREATE INDEX IF NOT EXISTS idx_items_quantity ON items (quantity, archived);

@@ -13,10 +13,12 @@ public class LowStockEventListener {
     private static final Logger logger = LoggerFactory.getLogger(LowStockEventListener.class);
     private final InventoryJdbcRepository repository;
     private final ObjectMapper objectMapper;
+    private final OutboxProcessor outboxProcessor;
 
-    public LowStockEventListener(InventoryJdbcRepository repository, ObjectMapper objectMapper) {
+    public LowStockEventListener(InventoryJdbcRepository repository, ObjectMapper objectMapper, OutboxProcessor outboxProcessor) {
         this.repository = repository;
         this.objectMapper = objectMapper;
+        this.outboxProcessor = outboxProcessor;
     }
 
     @EventListener
@@ -45,5 +47,6 @@ public class LowStockEventListener {
                 envelope.eventType(),
                 payload
         );
+        outboxProcessor.signal();
     }
 }

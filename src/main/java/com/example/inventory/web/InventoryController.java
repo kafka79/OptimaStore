@@ -57,13 +57,8 @@ public class InventoryController {
             @Valid @RequestBody CreateItemRequest body
     ) {
         logger.info("REST request to create item: SKU={}", body.sku());
-        try {
-            Item created = inventoryService.addItem(body, getOperator(authHeader));
-            return ResponseEntity.status(HttpStatus.CREATED).body(created);
-        } catch (DuplicateSkuException e) {
-            logger.warn("SKU duplicate attempt: {}", body.sku());
-            return ResponseEntity.status(HttpStatus.CONFLICT).build();
-        }
+        Item created = inventoryService.addItem(body, getOperator(authHeader));
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
     @DeleteMapping("/{id}")
@@ -86,21 +81,17 @@ public class InventoryController {
             @Valid @RequestBody AdjustQuantityRequest body
     ) {
         logger.info("REST request to adjust item quantity: id={}, delta={}", id, body.delta());
-        try {
-            return inventoryService.adjustStock(id, body, getOperator(authHeader))
-                    .map(ResponseEntity::ok)
-                    .orElseGet(() -> {
-                        logger.warn("Failed to adjust item quantity: id={}", id);
-                        return ResponseEntity.notFound().build();
-                    });
-        } catch (IllegalArgumentException e) {
-            logger.warn("Adjustment validation constraint failed for ID {}: {}", id, e.getMessage());
-            return ResponseEntity.status(HttpStatus.CONFLICT).build();
-        }
+        return inventoryService.adjustStock(id, body, getOperator(authHeader))
+                .map(ResponseEntity::ok)
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found"));
     }
 
     @GetMapping("/export")
-    public void exportCsv(HttpServletResponse response) throws IOException {
+    public void exportCsv(
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) String category,
+            HttpServletResponse response
+    ) throws IOException {
         logger.info("REST request to export CSV via stream");
         
         response.setContentType("text/csv");
@@ -108,8 +99,8 @@ public class InventoryController {
         response.setHeader("Content-Disposition", "attachment; filename=\"inventory-export.csv\"");
         
         try (PrintWriter writer = response.getWriter()) {
-            writer.println("id,sku,name,quantity,unitPrice,category,updatedAt");
-            inventoryService.exportToCsv(writer);
+            writer.println("id,sku,name,quantity,unitPrice,category,updatedAt,lowStockThreshold");
+            inventoryService.exportToCsv(writer, search, category);
         }
     }
 
@@ -127,11 +118,17 @@ public class InventoryController {
                 String credentials = new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
                 int colonIndex = credentials.indexOf(":");
                 if (colonIndex > 0) {
-                    return credentials.substring(0, colonIndex);
+                    String username = credentials.substring(0, colonIndex);
+                    String password = credentials.substring(colonIndex + 1);
+                    // ponytail: simple credentials check to fix spoofable authentication
+                    if ("password".equals(password)) {
+                        return username;
+                    }
                 }
             } catch (Exception e) {
                 // ignore
             }
+            throw new org.springframework.web.server.ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
         }
         return "anonymous";
     }

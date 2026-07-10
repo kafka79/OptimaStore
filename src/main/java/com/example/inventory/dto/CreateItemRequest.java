@@ -11,6 +11,7 @@ public record CreateItemRequest(
         @NotBlank String name,
         @NotNull @Min(0) Integer quantity,
         @NotNull @Min(0) BigDecimal unitPrice,
-        @NotBlank String category
+        @NotBlank String category,
+        Integer lowStockThreshold
 ) {
 }

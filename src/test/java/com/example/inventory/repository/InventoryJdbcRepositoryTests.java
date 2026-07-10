@@ -32,7 +32,7 @@ class InventoryJdbcRepositoryTests {
 
     @Test
     void testInsertAndFindById() {
-        Item inserted = repository.insert("SKU-100", "Item 100", 5, new BigDecimal("10.50"), "Electronics", "test-operator");
+        Item inserted = repository.insert("SKU-100", "Item 100", 5, new BigDecimal("10.50"), "Electronics", 5, "test-operator");
         assertNotNull(inserted.id());
         assertEquals("SKU-100", inserted.sku());
 
@@ -44,9 +44,9 @@ class InventoryJdbcRepositoryTests {
 
     @Test
     void testFindAllPaginated() {
-        repository.insert("SKU-A", "Apple", 10, new BigDecimal("1.50"), "Fruit", "test-operator");
-        repository.insert("SKU-B", "Banana", 20, new BigDecimal("0.80"), "Fruit", "test-operator");
-        repository.insert("SKU-C", "Cherry", 5, new BigDecimal("3.00"), "Fruit", "test-operator");
+        repository.insert("SKU-A", "Apple", 10, new BigDecimal("1.50"), "Fruit", 5, "test-operator");
+        repository.insert("SKU-B", "Banana", 20, new BigDecimal("0.80"), "Fruit", 5, "test-operator");
+        repository.insert("SKU-C", "Cherry", 5, new BigDecimal("3.00"), "Fruit", 5, "test-operator");
 
         PageResponse<Item> page = repository.findAll(0, 2, null, "Fruit");
         assertEquals(3, page.totalElements());
@@ -62,7 +62,7 @@ class InventoryJdbcRepositoryTests {
 
     @Test
     void testAdjustQuantity() {
-        Item inserted = repository.insert("SKU-100", "Item 100", 10, new BigDecimal("10.50"), "Electronics", "test-operator");
+        Item inserted = repository.insert("SKU-100", "Item 100", 10, new BigDecimal("10.50"), "Electronics", 5, "test-operator");
         
         Optional<Item> adjusted = repository.adjustQuantity(inserted.id(), 5, "test-operator");
         assertTrue(adjusted.isPresent());
@@ -75,8 +75,8 @@ class InventoryJdbcRepositoryTests {
 
     @Test
     void testBuildReport() {
-        repository.insert("SKU-1", "Item 1", 2, new BigDecimal("10.00"), "Electronics", "test-operator");
-        repository.insert("SKU-2", "Item 2", 10, new BigDecimal("5.00"), "Groceries", "test-operator");
+        repository.insert("SKU-1", "Item 1", 2, new BigDecimal("10.00"), "Electronics", 5, "test-operator");
+        repository.insert("SKU-2", "Item 2", 10, new BigDecimal("5.00"), "Groceries", 5, "test-operator");
 
         InventoryReport report = repository.buildReport(5);
         assertEquals(2, report.distinctItems());
@@ -88,7 +88,7 @@ class InventoryJdbcRepositoryTests {
 
     @Test
     void testSoftDelete() {
-        Item inserted = repository.insert("SKU-DEL", "To Delete", 5, new BigDecimal("4.00"), "General", "test-operator");
+        Item inserted = repository.insert("SKU-DEL", "To Delete", 5, new BigDecimal("4.00"), "General", 5, "test-operator");
         assertNotNull(inserted.id());
 
         // Delete the item (soft delete)
@@ -107,7 +107,7 @@ class InventoryJdbcRepositoryTests {
         assertTrue(isArchived);
 
         // Verify that trying to insert the same SKU un-archives and updates it
-        Item readded = repository.insert("SKU-DEL", "Reactivated Name", 20, new BigDecimal("5.00"), "Fruit", "test-operator");
+        Item readded = repository.insert("SKU-DEL", "Reactivated Name", 20, new BigDecimal("5.00"), "Fruit", 5, "test-operator");
         assertEquals(inserted.id(), readded.id());
         assertEquals("Reactivated Name", readded.name());
         assertEquals(20, readded.quantity());
@@ -116,7 +116,7 @@ class InventoryJdbcRepositoryTests {
 
     @Test
     void testAuditLogging() {
-        Item item = repository.insert("SKU-LOG", "Logger Item", 10, new BigDecimal("2.50"), "General", "test-operator");
+        Item item = repository.insert("SKU-LOG", "Logger Item", 10, new BigDecimal("2.50"), "General", 5, "test-operator");
         
         Integer count = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM stock_transactions WHERE sku = 'SKU-LOG'",
@@ -159,7 +159,7 @@ class InventoryJdbcRepositoryTests {
         assertEquals(15, ((Number) log.get("previous_quantity")).intValue());
         assertEquals(0, ((Number) log.get("new_quantity")).intValue());
 
-        repository.insert("SKU-LOG", "Reactivated Logger", 25, new BigDecimal("2.50"), "General", "test-operator");
+        repository.insert("SKU-LOG", "Reactivated Logger", 25, new BigDecimal("2.50"), "General", 5, "test-operator");
         count = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM stock_transactions WHERE sku = 'SKU-LOG'",
                 Integer.class

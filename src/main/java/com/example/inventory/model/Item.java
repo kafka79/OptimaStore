@@ -11,6 +11,7 @@ public record Item(
         BigDecimal unitPrice,
         String category,
         Instant updatedAt,
-        boolean archived
+        boolean archived,
+        int lowStockThreshold
 ) {
 }

@@ -18,6 +18,12 @@ public class OutboxProcessor {
     private final MessagePublisher messagePublisher;
     private final TransactionTemplate transactionTemplate;
 
+    private final java.util.concurrent.atomic.AtomicBoolean hasPending = new java.util.concurrent.atomic.AtomicBoolean(true);
+
+    public void signal() {
+        hasPending.set(true);
+    }
+
     public OutboxProcessor(InventoryJdbcRepository repository, MessagePublisher messagePublisher, TransactionTemplate transactionTemplate) {
         this.repository = repository;
         this.messagePublisher = messagePublisher;
@@ -26,6 +32,9 @@ public class OutboxProcessor {
 
     @Scheduled(fixedDelayString = "${outbox.scheduler.delay:5000}") // Runs every 5 seconds
     public void processOutbox() {
+        if (!hasPending.get()) {
+            return;
+        }
         // 1. Lock next pending events and change their status to PROCESSING in a short transaction
         List<OutboxEvent> events = transactionTemplate.execute(status -> {
             List<OutboxEvent> pending = repository.findPendingOutboxEvents();
@@ -38,6 +47,7 @@ public class OutboxProcessor {
         });
 
         if (events == null || events.isEmpty()) {
+            hasPending.set(false);
             return;
         }
 
@@ -61,6 +71,16 @@ public class OutboxProcessor {
                     repository.updateOutboxEventStatus(event.id(), "PENDING");
                 });
             }
+        }
+    }
+
+    @Scheduled(cron = "0 0 0 * * ?") // Runs daily at midnight
+    public void purgeOldData() {
+        logger.info("Purging stock transactions older than 30 days...");
+        try {
+            repository.purgeOldTransactions(30);
+        } catch (Exception e) {
+            logger.error("Failed to purge stock transactions: {}", e.getMessage());
         }
     }
 }

@@ -36,7 +36,7 @@ public class InventoryJdbcRepository {
 
     public List<Item> findAll() {
         String sql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
                 FROM items WHERE archived = false ORDER BY name
                 """;
         try {
@@ -48,7 +48,7 @@ public class InventoryJdbcRepository {
 
     public PageResponse<Item> findAll(int page, int size, String search, String category) {
         StringBuilder countSql = new StringBuilder("SELECT COUNT(*) FROM items WHERE archived = false");
-        StringBuilder selectSql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived FROM items WHERE archived = false");
+        StringBuilder selectSql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items WHERE archived = false");
         MapSqlParameterSource params = new MapSqlParameterSource();
 
         if (search != null && !search.trim().isEmpty()) {
@@ -86,20 +86,35 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public void streamAll(PrintWriter writer) {
-        String sql = "SELECT id, sku, name, quantity, unit_price, category, updated_at, archived FROM items WHERE archived = false ORDER BY name";
+    public void streamAll(PrintWriter writer, String search, String category) {
+        StringBuilder sql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items WHERE archived = false");
+        MapSqlParameterSource params = new MapSqlParameterSource();
+
+        if (search != null && !search.trim().isEmpty()) {
+            String searchPattern = "%" + search.trim().toLowerCase() + "%";
+            sql.append(" AND (LOWER(sku) LIKE :searchPattern OR LOWER(name) LIKE :searchPattern)");
+            params.addValue("searchPattern", searchPattern);
+        }
+
+        if (category != null && !category.trim().isEmpty() && !category.equalsIgnoreCase("all")) {
+            sql.append(" AND LOWER(category) = :category");
+            params.addValue("category", category.trim().toLowerCase());
+        }
+
+        sql.append(" ORDER BY name LIMIT 10000");
+
         try {
-            // Utilizing RowCallbackHandler streams result set chunks controlled by fetchSize config
-            jdbcTemplate.query(sql, rs -> {
+            jdbcTemplate.query(sql.toString(), params, rs -> {
                 Item item = mapRow(rs);
-                writer.println(String.format("%s,%s,%s,%d,%s,%s,%s",
+                writer.println(String.format("%s,%s,%s,%d,%s,%s,%s,%d",
                         item.id() != null ? item.id().toString() : "",
                         csvEscape(item.sku()),
                         csvEscape(item.name()),
                         item.quantity(),
                         item.unitPrice().toString(),
                         csvEscape(item.category()),
-                        item.updatedAt().toString()
+                        item.updatedAt().toString(),
+                        item.lowStockThreshold()
                 ));
             });
         } catch (org.springframework.dao.DataAccessException e) {
@@ -118,7 +133,7 @@ public class InventoryJdbcRepository {
 
     public Optional<Item> findById(long id) {
         String sql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
                 FROM items WHERE id = :id AND archived = false
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource("id", id);
@@ -132,7 +147,7 @@ public class InventoryJdbcRepository {
 
     public Optional<Item> findByIdForUpdate(long id) {
         String sql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
                 FROM items WHERE id = :id AND archived = false FOR UPDATE
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource("id", id);
@@ -167,7 +182,7 @@ public class InventoryJdbcRepository {
 
     public Optional<Item> findArchivedBySku(String sku) {
         String sql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
                 FROM items WHERE sku = :sku AND archived = true
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource("sku", sku.trim());
@@ -179,8 +194,8 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public Item reactivateItem(long id, String name, int quantity, BigDecimal unitPrice, String category, String operator) {
-        String selectSql = "SELECT id, sku, name, quantity, unit_price, category, updated_at, archived FROM items WHERE id = :id FOR UPDATE";
+    public Item reactivateItem(long id, String name, int quantity, BigDecimal unitPrice, String category, Integer lowStockThreshold, String operator) {
+        String selectSql = "SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items WHERE id = :id FOR UPDATE";
         MapSqlParameterSource selectParams = new MapSqlParameterSource("id", id);
         List<Item> archivedResults = jdbcTemplate.query(selectSql, selectParams, itemRowMapper);
         if (archivedResults.isEmpty()) {
@@ -190,14 +205,15 @@ public class InventoryJdbcRepository {
 
         String sql = """
                 UPDATE items
-                SET name = :name, quantity = :quantity, unit_price = :unitPrice, category = :category, updated_at = :updatedAt, archived = false
+                SET name = :name, quantity = :quantity, unit_price = :unitPrice, category = :category, updated_at = :updatedAt, archived = false, low_stock_threshold = :lowStockThreshold
                 WHERE id = :id
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("name", name.trim())
                 .addValue("quantity", quantity)
                 .addValue("unitPrice", unitPrice)
-                .addValue("category", category.trim())
+                .addValue("category", normalizeCategory(category))
+                .addValue("lowStockThreshold", lowStockThreshold != null ? lowStockThreshold : 5)
                 .addValue("updatedAt", Timestamp.from(Instant.now()))
                 .addValue("id", id);
         try {
@@ -209,31 +225,34 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public Item insert(String sku, String name, int quantity, BigDecimal unitPrice, String category, String operator) {
+    public Item insert(String sku, String name, int quantity, BigDecimal unitPrice, String category, Integer lowStockThreshold, String operator) {
         String sql = """
-                INSERT INTO items (sku, name, quantity, unit_price, category, updated_at, archived)
-                VALUES (:sku, :name, :quantity, :unitPrice, :category, :updatedAt, :archived)
+                INSERT INTO items (sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold)
+                VALUES (:sku, :name, :quantity, :unitPrice, :category, :updatedAt, :archived, :lowStockThreshold)
                 """;
         Instant now = Instant.now();
+        String normalizedCategory = normalizeCategory(category);
+        int threshold = lowStockThreshold != null ? lowStockThreshold : 5;
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("sku", sku.trim())
                 .addValue("name", name.trim())
                 .addValue("quantity", quantity)
                 .addValue("unitPrice", unitPrice)
-                .addValue("category", category.trim())
+                .addValue("category", normalizedCategory)
                 .addValue("updatedAt", Timestamp.from(now))
-                .addValue("archived", false);
+                .addValue("archived", false)
+                .addValue("lowStockThreshold", threshold);
 
         KeyHolder keyHolder = new GeneratedKeyHolder();
         try {
             jdbcTemplate.update(sql, params, keyHolder);
             long id = extractId(keyHolder);
             logTransaction(id, sku.trim(), quantity, 0, quantity, "INITIAL_STOCK", operator);
-            return new Item(id, sku.trim(), name.trim(), quantity, unitPrice, category.trim(), now, false);
+            return new Item(id, sku.trim(), name.trim(), quantity, unitPrice, normalizedCategory, now, false, threshold);
         } catch (org.springframework.dao.DuplicateKeyException e) {
             Optional<Item> archivedItem = findArchivedBySku(sku);
             if (archivedItem.isPresent()) {
-                return reactivateItem(archivedItem.get().id(), name, quantity, unitPrice, category, operator);
+                return reactivateItem(archivedItem.get().id(), name, quantity, unitPrice, category, lowStockThreshold, operator);
             }
             throw new DuplicateSkuException(sku.trim(), e);
         } catch (org.springframework.dao.DataAccessException e) {
@@ -296,7 +315,7 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public InventoryReport buildReport(int lowStockThreshold) {
+    public InventoryReport buildReport(int defaultThreshold) {
         String statsSql = """
                 SELECT 
                     COUNT(*) as distinct_items, 
@@ -306,8 +325,8 @@ public class InventoryJdbcRepository {
                 WHERE archived = false
                 """;
         String lowSql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived FROM items
-                WHERE quantity < :threshold AND archived = false ORDER BY quantity, name
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items
+                WHERE quantity < low_stock_threshold AND archived = false ORDER BY quantity, name
                 """;
         try {
             long distinctItems = 0;
@@ -326,8 +345,7 @@ public class InventoryJdbcRepository {
                 }
             }
 
-            MapSqlParameterSource params = new MapSqlParameterSource("threshold", lowStockThreshold);
-            List<Item> low = jdbcTemplate.query(lowSql, params, itemRowMapper);
+            List<Item> low = jdbcTemplate.query(lowSql, new MapSqlParameterSource(), itemRowMapper);
 
             return new InventoryReport(distinctItems, totalUnits, totalValue, low.size(), low);
         } catch (org.springframework.dao.DataAccessException e) {
@@ -355,7 +373,8 @@ public class InventoryJdbcRepository {
                 rs.getBigDecimal("unit_price"),
                 rs.getString("category"),
                 updated,
-                rs.getBoolean("archived")
+                rs.getBoolean("archived"),
+                rs.getInt("low_stock_threshold")
         );
     }
 
@@ -436,6 +455,27 @@ public class InventoryJdbcRepository {
             jdbcTemplate.update(sql, params);
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to delete outbox event", e);
+        }
+    }
+
+    private String normalizeCategory(String category) {
+        if (category == null || category.isBlank()) {
+            return "General";
+        }
+        String trimmed = category.trim();
+        if (trimmed.isEmpty()) {
+            return "General";
+        }
+        return trimmed.substring(0, 1).toUpperCase() + trimmed.substring(1).toLowerCase();
+    }
+
+    public void purgeOldTransactions(int daysToKeep) {
+        String sql = "DELETE FROM stock_transactions WHERE created_at < :cutoff";
+        MapSqlParameterSource params = new MapSqlParameterSource("cutoff", Timestamp.from(Instant.now().minus(java.time.Duration.ofDays(daysToKeep))));
+        try {
+            jdbcTemplate.update(sql, params);
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to purge old transactions", e);
         }
     }
 }

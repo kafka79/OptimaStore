@@ -40,7 +40,7 @@ class InventoryServiceTests {
 
     @Test
     void testListItemsAll() {
-        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false);
+        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false, 5);
         when(repository.findAll()).thenReturn(List.of(item));
 
         List<Item> result = service.listItems();
@@ -50,7 +50,7 @@ class InventoryServiceTests {
 
     @Test
     void testListItemsPaginated() {
-        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false);
+        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false, 5);
         PageResponse<Item> pageResponse = new PageResponse<>(List.of(item), 0, 10, 1);
         when(repository.findAll(0, 10, "SKU1", "Category")).thenReturn(pageResponse);
 
@@ -62,9 +62,9 @@ class InventoryServiceTests {
 
     @Test
     void testAddItem() {
-        CreateItemRequest request = new CreateItemRequest("SKU1", "Name1", 10, BigDecimal.TEN, "Category");
-        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false);
-        when(repository.insert(eq("SKU1"), eq("Name1"), eq(10), eq(BigDecimal.TEN), eq("Category"), anyString())).thenReturn(item);
+        CreateItemRequest request = new CreateItemRequest("SKU1", "Name1", 10, BigDecimal.TEN, "Category", 5);
+        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false, 5);
+        when(repository.insert(eq("SKU1"), eq("Name1"), eq(10), eq(BigDecimal.TEN), eq("Category"), eq(5), anyString())).thenReturn(item);
 
         Item result = service.addItem(request, "operator");
         assertNotNull(result);
@@ -83,7 +83,7 @@ class InventoryServiceTests {
     @Test
     void testAdjustStock() {
         AdjustQuantityRequest request = new AdjustQuantityRequest(5);
-        Item item = new Item(1L, "SKU1", "Name1", 15, BigDecimal.TEN, "Category", Instant.now(), false);
+        Item item = new Item(1L, "SKU1", "Name1", 15, BigDecimal.TEN, "Category", Instant.now(), false, 5);
         when(repository.adjustQuantity(eq(1L), eq(5), anyString())).thenReturn(Optional.of(item));
 
         Optional<Item> result = service.adjustStock(1L, request, "operator");

@@ -22,14 +22,6 @@ import java.util.Optional;
 @Transactional
 public class InventoryService {
 
-    @Value("${inventory.low-stock.threshold:5}")
-    private int lowStockThreshold;
-
-    private final java.util.concurrent.atomic.AtomicReference<CachedReport> cachedReport = 
-            new java.util.concurrent.atomic.AtomicReference<>();
-
-    private record CachedReport(InventoryReport report, int threshold, long timestamp) {}
-
     private static final Logger logger = LoggerFactory.getLogger(InventoryService.class);
     private final InventoryJdbcRepository repository;
     private final ApplicationEventPublisher eventPublisher;
@@ -59,9 +51,10 @@ public class InventoryService {
                 request.quantity(),
                 request.unitPrice(),
                 request.category(),
+                request.lowStockThreshold(),
                 operator
         );
-        if (item.quantity() < lowStockThreshold) {
+        if (item.quantity() < item.lowStockThreshold()) {
             logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", item.sku(), item.quantity());
             eventPublisher.publishEvent(new LowStockEvent(this, item));
         }
@@ -78,7 +71,7 @@ public class InventoryService {
         Optional<Item> result = repository.adjustQuantity(id, request.delta(), operator);
         if (result.isPresent()) {
             Item item = result.get();
-            if (item.quantity() < lowStockThreshold) {
+            if (item.quantity() < item.lowStockThreshold()) {
                 logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", item.sku(), item.quantity());
                 eventPublisher.publishEvent(new LowStockEvent(this, item));
             }
@@ -90,17 +83,7 @@ public class InventoryService {
     public InventoryReport report(int lowStockThreshold) {
         logger.info("Generating report with threshold: {}", lowStockThreshold);
         int threshold = Math.max(0, lowStockThreshold);
-        
-        long now = System.currentTimeMillis();
-        CachedReport cached = cachedReport.get();
-        if (cached != null && cached.threshold() == threshold && (now - cached.timestamp() < 5000)) {
-            logger.info("Returning cached inventory report");
-            return cached.report();
-        }
-        
-        InventoryReport freshReport = repository.buildReport(threshold);
-        cachedReport.set(new CachedReport(freshReport, threshold, now));
-        return freshReport;
+        return repository.buildReport(threshold);
     }
 
 
@@ -112,8 +95,8 @@ public class InventoryService {
     }
 
     @Transactional(readOnly = true)
-    public void exportToCsv(PrintWriter writer) {
-        logger.info("Streaming CSV export");
-        repository.streamAll(writer);
+    public void exportToCsv(PrintWriter writer, String search, String category) {
+        logger.info("Streaming CSV export with filter");
+        repository.streamAll(writer, search, category);
     }
 }
