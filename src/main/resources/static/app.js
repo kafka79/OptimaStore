@@ -1,9 +1,25 @@
+function getCookie(name) {
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; ${name}=`);
+  if (parts.length === 2) return parts.pop().split(';').shift();
+  return null;
+}
+
 const api = (path, options = {}) => {
   const operatorSelect = document.getElementById("operator-select");
   const userId = operatorSelect ? operatorSelect.value : "anonymous";
   const authHeader = "Basic " + btoa(userId + ":password");
+  const csrfToken = getCookie("XSRF-TOKEN");
+  const headers = { 
+    "Content-Type": "application/json", 
+    "Authorization": authHeader, 
+    ...options.headers 
+  };
+  if (csrfToken) {
+    headers["X-XSRF-TOKEN"] = csrfToken;
+  }
   return fetch(path, {
-    headers: { "Content-Type": "application/json", "Authorization": authHeader, ...options.headers },
+    headers,
     ...options,
   });
 };

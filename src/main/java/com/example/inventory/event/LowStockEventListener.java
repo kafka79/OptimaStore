@@ -7,6 +7,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
 @Component
 public class LowStockEventListener {
 
@@ -47,6 +50,16 @@ public class LowStockEventListener {
                 envelope.eventType(),
                 payload
         );
-        outboxProcessor.signal();
+        // ponytail: defer signal until transaction commits to avoid visibility race condition
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    outboxProcessor.signal();
+                }
+            });
+        } else {
+            outboxProcessor.signal();
+        }
     }
 }

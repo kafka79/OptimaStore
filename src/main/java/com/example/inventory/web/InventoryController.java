@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.List;
 
+
 @RestController
 @RequestMapping("/api/items")
 @Validated
@@ -53,21 +54,19 @@ public class InventoryController {
 
     @PostMapping
     public ResponseEntity<Item> create(
-            @RequestHeader(value = "Authorization", required = false) String authHeader,
             @Valid @RequestBody CreateItemRequest body
     ) {
         logger.info("REST request to create item: SKU={}", body.sku());
-        Item created = inventoryService.addItem(body, getOperator(authHeader));
+        Item created = inventoryService.addItem(body, getOperator());
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(
-            @RequestHeader(value = "Authorization", required = false) String authHeader,
             @PathVariable long id
     ) {
         logger.info("REST request to delete item: id={}", id);
-        if (inventoryService.removeItem(id, getOperator(authHeader))) {
+        if (inventoryService.removeItem(id, getOperator())) {
             return ResponseEntity.noContent().build();
         }
         logger.warn("Item to delete not found: id={}", id);
@@ -76,12 +75,11 @@ public class InventoryController {
 
     @PatchMapping("/{id}/quantity")
     public ResponseEntity<Item> adjustQuantity(
-            @RequestHeader(value = "Authorization", required = false) String authHeader,
             @PathVariable long id,
             @Valid @RequestBody AdjustQuantityRequest body
     ) {
         logger.info("REST request to adjust item quantity: id={}, delta={}", id, body.delta());
-        return inventoryService.adjustStock(id, body, getOperator(authHeader))
+        return inventoryService.adjustStock(id, body, getOperator())
                 .map(ResponseEntity::ok)
                 .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found"));
     }
@@ -94,14 +92,36 @@ public class InventoryController {
     ) throws IOException {
         logger.info("REST request to export CSV via stream");
         
+        List<Item> items = inventoryService.getItemsForExport(search, category);
+        
         response.setContentType("text/csv");
         response.setCharacterEncoding("UTF-8");
         response.setHeader("Content-Disposition", "attachment; filename=\"inventory-export.csv\"");
         
         try (PrintWriter writer = response.getWriter()) {
             writer.println("id,sku,name,quantity,unitPrice,category,updatedAt,lowStockThreshold");
-            inventoryService.exportToCsv(writer, search, category);
+            for (Item item : items) {
+                writer.println(String.format("%s,%s,%s,%d,%s,%s,%s,%d",
+                        item.id() != null ? item.id().toString() : "",
+                        csvEscape(item.sku()),
+                        csvEscape(item.name()),
+                        item.quantity(),
+                        item.unitPrice().toString(),
+                        csvEscape(item.category()),
+                        item.updatedAt().toString(),
+                        item.lowStockThreshold()
+                ));
+            }
         }
+    }
+
+    private String csvEscape(String s) {
+        if (s == null) return "";
+        String escaped = s.replace("\"", "\"\"");
+        if (escaped.contains(",") || escaped.contains("\"") || escaped.contains("\n") || escaped.contains("\r")) {
+            return "\"" + escaped + "\"";
+        }
+        return escaped;
     }
 
     @GetMapping("/categories")
@@ -110,25 +130,10 @@ public class InventoryController {
         return inventoryService.getCategories();
     }
 
-    private String getOperator(String authHeader) {
-        if (authHeader != null && authHeader.toLowerCase().startsWith("basic ")) {
-            try {
-                String base64Credentials = authHeader.substring(6).trim();
-                byte[] decoded = java.util.Base64.getDecoder().decode(base64Credentials);
-                String credentials = new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
-                int colonIndex = credentials.indexOf(":");
-                if (colonIndex > 0) {
-                    String username = credentials.substring(0, colonIndex);
-                    String password = credentials.substring(colonIndex + 1);
-                    // ponytail: simple credentials check to fix spoofable authentication
-                    if ("password".equals(password)) {
-                        return username;
-                    }
-                }
-            } catch (Exception e) {
-                // ignore
-            }
-            throw new org.springframework.web.server.ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
+    private String getOperator() {
+        org.springframework.security.core.Authentication auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.isAuthenticated() && !"anonymousUser".equals(auth.getName())) {
+            return auth.getName();
         }
         return "anonymous";
     }

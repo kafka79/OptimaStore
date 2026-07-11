@@ -2,6 +2,7 @@ package com.example.inventory.event;
 
 import com.example.inventory.model.OutboxEvent;
 import com.example.inventory.repository.InventoryJdbcRepository;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -9,6 +10,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Component
 public class OutboxProcessor {
@@ -19,9 +22,17 @@ public class OutboxProcessor {
     private final TransactionTemplate transactionTemplate;
 
     private final java.util.concurrent.atomic.AtomicBoolean hasPending = new java.util.concurrent.atomic.AtomicBoolean(true);
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     public void signal() {
         hasPending.set(true);
+        executor.submit(this::processOutbox);
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        logger.info("Shutting down OutboxProcessor executor...");
+        executor.shutdown();
     }
 
     public OutboxProcessor(InventoryJdbcRepository repository, MessagePublisher messagePublisher, TransactionTemplate transactionTemplate) {
@@ -37,7 +48,7 @@ public class OutboxProcessor {
         }
         // 1. Lock next pending events and change their status to PROCESSING in a short transaction
         List<OutboxEvent> events = transactionTemplate.execute(status -> {
-            List<OutboxEvent> pending = repository.findPendingOutboxEvents();
+            List<OutboxEvent> pending = repository.findPendingOutboxEvents(java.time.Instant.now().minusSeconds(300));
             if (pending != null && !pending.isEmpty()) {
                 for (OutboxEvent event : pending) {
                     repository.updateOutboxEventStatus(event.id(), "PROCESSING");
@@ -66,9 +77,15 @@ public class OutboxProcessor {
             } catch (Exception e) {
                 logger.error("Failed to publish outbox event ID [{}]: {}", event.id(), e.getMessage());
                 
-                // 4. Revert status back to PENDING so it can be retried in a separate transaction
+                // 4. Increment retry count or send to DLQ (status = FAILED) if limit exceeded
                 transactionTemplate.executeWithoutResult(status -> {
-                    repository.updateOutboxEventStatus(event.id(), "PENDING");
+                    int nextRetry = event.retryCount() + 1;
+                    if (nextRetry >= 5) {
+                        logger.error("Outbox event ID [{}] reached max retry limit. Moving to DLQ (FAILED).", event.id());
+                        repository.incrementOutboxEventRetry(event.id(), nextRetry, "FAILED");
+                    } else {
+                        repository.incrementOutboxEventRetry(event.id(), nextRetry, "PENDING");
+                    }
                 });
             }
         }

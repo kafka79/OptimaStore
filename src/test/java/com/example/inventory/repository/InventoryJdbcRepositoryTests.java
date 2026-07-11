@@ -173,4 +173,28 @@ class InventoryJdbcRepositoryTests {
         assertEquals(0, ((Number) log.get("previous_quantity")).intValue());
         assertEquals(25, ((Number) log.get("new_quantity")).intValue());
     }
+
+    @Test
+    void testOutboxRetryAndDlq() {
+        repository.insertOutboxEvent("aggregate", "123", "event-type", "payload");
+        java.util.List<com.example.inventory.model.OutboxEvent> events = repository.findPendingOutboxEvents(java.time.Instant.now().plusSeconds(60));
+        assertEquals(1, events.size());
+        assertEquals(0, events.get(0).retryCount());
+        assertEquals("PENDING", events.get(0).status());
+
+        repository.incrementOutboxEventRetry(events.get(0).id(), 1, "PENDING");
+        events = repository.findPendingOutboxEvents(java.time.Instant.now().plusSeconds(60));
+        assertEquals(1, events.get(0).retryCount());
+        assertEquals("PENDING", events.get(0).status());
+
+        repository.incrementOutboxEventRetry(events.get(0).id(), 5, "FAILED");
+        events = repository.findPendingOutboxEvents(java.time.Instant.now().plusSeconds(60));
+        assertEquals(0, events.size());
+
+        String status = jdbcTemplate.queryForObject(
+                "SELECT status FROM outbox_events WHERE aggregate_id = '123'",
+                String.class
+        );
+        assertEquals("FAILED", status);
+    }
 }

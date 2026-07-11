@@ -30,8 +30,11 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     event_type VARCHAR(255) NOT NULL,
     payload TEXT NOT NULL,
     status VARCHAR(64) NOT NULL DEFAULT 'PENDING',
+    retry_count INT NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_items_sku ON items (sku);
 CREATE INDEX IF NOT EXISTS idx_items_category ON items (category);

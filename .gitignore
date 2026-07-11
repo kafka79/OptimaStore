@@ -35,3 +35,5 @@ build/
 ### Custom ###
 *.log
 data/
+desktop.ini
+Desktop.ini

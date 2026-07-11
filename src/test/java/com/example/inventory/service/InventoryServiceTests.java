@@ -83,12 +83,38 @@ class InventoryServiceTests {
     @Test
     void testAdjustStock() {
         AdjustQuantityRequest request = new AdjustQuantityRequest(5);
-        Item item = new Item(1L, "SKU1", "Name1", 15, BigDecimal.TEN, "Category", Instant.now(), false, 5);
-        when(repository.adjustQuantity(eq(1L), eq(5), anyString())).thenReturn(Optional.of(item));
+        Item beforeItem = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false, 5);
+        Item afterItem = new Item(1L, "SKU1", "Name1", 15, BigDecimal.TEN, "Category", Instant.now(), false, 5);
+        when(repository.findByIdForUpdate(eq(1L))).thenReturn(Optional.of(beforeItem));
+        when(repository.adjustQuantity(eq(beforeItem), eq(5), anyString())).thenReturn(Optional.of(afterItem));
 
         Optional<Item> result = service.adjustStock(1L, request, "operator");
         assertTrue(result.isPresent());
         assertEquals(15, result.get().quantity());
+    }
+
+    @Test
+    void testAdjustStockNoEventIfAlreadyBelowThreshold() {
+        AdjustQuantityRequest request = new AdjustQuantityRequest(-1);
+        Item beforeItem = new Item(1L, "SKU1", "Name1", 3, BigDecimal.TEN, "Category", Instant.now(), false, 5);
+        Item afterItem = new Item(1L, "SKU1", "Name1", 2, BigDecimal.TEN, "Category", Instant.now(), false, 5);
+        when(repository.findByIdForUpdate(eq(1L))).thenReturn(Optional.of(beforeItem));
+        when(repository.adjustQuantity(eq(beforeItem), eq(-1), anyString())).thenReturn(Optional.of(afterItem));
+
+        service.adjustStock(1L, request, "operator");
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    void testAdjustStockFiresEventOnThresholdCross() {
+        AdjustQuantityRequest request = new AdjustQuantityRequest(-2);
+        Item beforeItem = new Item(1L, "SKU1", "Name1", 6, BigDecimal.TEN, "Category", Instant.now(), false, 5);
+        Item afterItem = new Item(1L, "SKU1", "Name1", 4, BigDecimal.TEN, "Category", Instant.now(), false, 5);
+        when(repository.findByIdForUpdate(eq(1L))).thenReturn(Optional.of(beforeItem));
+        when(repository.adjustQuantity(eq(beforeItem), eq(-2), anyString())).thenReturn(Optional.of(afterItem));
+
+        service.adjustStock(1L, request, "operator");
+        verify(eventPublisher, times(1)).publishEvent(any(com.example.inventory.event.LowStockEvent.class));
     }
 
     @Test

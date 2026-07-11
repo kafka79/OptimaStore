@@ -68,12 +68,18 @@ public class InventoryService {
 
     public Optional<Item> adjustStock(long id, AdjustQuantityRequest request, String operator) {
         logger.info("Adjusting stock for ID {}: delta={}", id, request.delta());
-        Optional<Item> result = repository.adjustQuantity(id, request.delta(), operator);
+        // ponytail: query state before adjust to verify boundary transition
+        Optional<Item> currentOpt = repository.findByIdForUpdate(id);
+        if (currentOpt.isEmpty()) {
+            return Optional.empty();
+        }
+        Item before = currentOpt.get();
+        Optional<Item> result = repository.adjustQuantity(before, request.delta(), operator);
         if (result.isPresent()) {
-            Item item = result.get();
-            if (item.quantity() < item.lowStockThreshold()) {
-                logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", item.sku(), item.quantity());
-                eventPublisher.publishEvent(new LowStockEvent(this, item));
+            Item after = result.get();
+            if (before.quantity() >= before.lowStockThreshold() && after.quantity() < after.lowStockThreshold()) {
+                logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", after.sku(), after.quantity());
+                eventPublisher.publishEvent(new LowStockEvent(this, after));
             }
         }
         return result;
@@ -95,8 +101,8 @@ public class InventoryService {
     }
 
     @Transactional(readOnly = true)
-    public void exportToCsv(PrintWriter writer, String search, String category) {
-        logger.info("Streaming CSV export with filter");
-        repository.streamAll(writer, search, category);
+    public List<Item> getItemsForExport(String search, String category) {
+        logger.info("Fetching items for export");
+        return repository.findItemsForExport(search, category);
     }
 }

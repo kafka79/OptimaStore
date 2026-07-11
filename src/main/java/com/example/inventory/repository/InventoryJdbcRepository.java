@@ -86,6 +86,30 @@ public class InventoryJdbcRepository {
         }
     }
 
+    public List<Item> findItemsForExport(String search, String category) {
+        StringBuilder sql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items WHERE archived = false");
+        MapSqlParameterSource params = new MapSqlParameterSource();
+
+        if (search != null && !search.trim().isEmpty()) {
+            String searchPattern = "%" + search.trim().toLowerCase() + "%";
+            sql.append(" AND (LOWER(sku) LIKE :searchPattern OR LOWER(name) LIKE :searchPattern)");
+            params.addValue("searchPattern", searchPattern);
+        }
+
+        if (category != null && !category.trim().isEmpty() && !category.equalsIgnoreCase("all")) {
+            sql.append(" AND LOWER(category) = :category");
+            params.addValue("category", category.trim().toLowerCase());
+        }
+
+        sql.append(" ORDER BY name");
+
+        try {
+            return jdbcTemplate.query(sql.toString(), params, itemRowMapper);
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to load export items", e);
+        }
+    }
+
     public void streamAll(PrintWriter writer, String search, String category) {
         StringBuilder sql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items WHERE archived = false");
         MapSqlParameterSource params = new MapSqlParameterSource();
@@ -101,7 +125,7 @@ public class InventoryJdbcRepository {
             params.addValue("category", category.trim().toLowerCase());
         }
 
-        sql.append(" ORDER BY name LIMIT 10000");
+        sql.append(" ORDER BY name");
 
         try {
             jdbcTemplate.query(sql.toString(), params, rs -> {
@@ -194,6 +218,20 @@ public class InventoryJdbcRepository {
         }
     }
 
+    public Optional<Item> findBySkuAny(String sku) {
+        String sql = """
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
+                FROM items WHERE sku = :sku
+                """;
+        MapSqlParameterSource params = new MapSqlParameterSource("sku", sku.trim());
+        try {
+            List<Item> results = jdbcTemplate.query(sql, params, itemRowMapper);
+            return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to find item by sku", e);
+        }
+    }
+
     public Item reactivateItem(long id, String name, int quantity, BigDecimal unitPrice, String category, Integer lowStockThreshold, String operator) {
         String selectSql = "SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items WHERE id = :id FOR UPDATE";
         MapSqlParameterSource selectParams = new MapSqlParameterSource("id", id);
@@ -226,6 +264,16 @@ public class InventoryJdbcRepository {
     }
 
     public Item insert(String sku, String name, int quantity, BigDecimal unitPrice, String category, Integer lowStockThreshold, String operator) {
+        Optional<Item> existingOpt = findBySkuAny(sku);
+        if (existingOpt.isPresent()) {
+            Item existing = existingOpt.get();
+            if (existing.archived()) {
+                return reactivateItem(existing.id(), name, quantity, unitPrice, category, lowStockThreshold, operator);
+            } else {
+                throw new DuplicateSkuException(sku.trim(), null);
+            }
+        }
+
         String sql = """
                 INSERT INTO items (sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold)
                 VALUES (:sku, :name, :quantity, :unitPrice, :category, :updatedAt, :archived, :lowStockThreshold)
@@ -250,10 +298,7 @@ public class InventoryJdbcRepository {
             logTransaction(id, sku.trim(), quantity, 0, quantity, "INITIAL_STOCK", operator);
             return new Item(id, sku.trim(), name.trim(), quantity, unitPrice, normalizedCategory, now, false, threshold);
         } catch (org.springframework.dao.DuplicateKeyException e) {
-            Optional<Item> archivedItem = findArchivedBySku(sku);
-            if (archivedItem.isPresent()) {
-                return reactivateItem(archivedItem.get().id(), name, quantity, unitPrice, category, lowStockThreshold, operator);
-            }
+            // Rare race condition check if inserted in concurrent transaction
             throw new DuplicateSkuException(sku.trim(), e);
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to insert item", e);
@@ -282,12 +327,7 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public Optional<Item> adjustQuantity(long id, int delta, String operator) {
-        Optional<Item> currentOpt = findByIdForUpdate(id);
-        if (currentOpt.isEmpty()) {
-            return Optional.empty();
-        }
-        Item current = currentOpt.get();
+    public Optional<Item> adjustQuantity(Item current, int delta, String operator) {
         int previousQty = current.quantity();
         int newQty = previousQty + delta;
         if (newQty < 0) {
@@ -302,17 +342,25 @@ public class InventoryJdbcRepository {
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("newQuantity", newQty)
                 .addValue("updatedAt", Timestamp.from(Instant.now()))
-                .addValue("id", id);
+                .addValue("id", current.id());
         try {
             int updated = jdbcTemplate.update(sql, params);
             if (updated == 0) {
                 return Optional.empty();
             }
-            logTransaction(id, current.sku(), delta, previousQty, newQty, delta >= 0 ? "RESTOCK" : "DISPATCH", operator);
-            return findById(id);
+            logTransaction(current.id(), current.sku(), delta, previousQty, newQty, delta >= 0 ? "RESTOCK" : "DISPATCH", operator);
+            return findById(current.id());
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to adjust quantity", e);
         }
+    }
+
+    public Optional<Item> adjustQuantity(long id, int delta, String operator) {
+        Optional<Item> currentOpt = findByIdForUpdate(id);
+        if (currentOpt.isEmpty()) {
+            return Optional.empty();
+        }
+        return adjustQuantity(currentOpt.get(), delta, operator);
     }
 
     public InventoryReport buildReport(int defaultThreshold) {
@@ -412,23 +460,25 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public List<OutboxEvent> findPendingOutboxEvents() {
+    public List<OutboxEvent> findPendingOutboxEvents(Instant processingCutoff) {
         String sql = """
-                SELECT id, aggregate_type, aggregate_id, event_type, payload, status, created_at
+                SELECT id, aggregate_type, aggregate_id, event_type, payload, status, retry_count, created_at
                 FROM outbox_events
-                WHERE status = 'PENDING'
+                WHERE status = 'PENDING' OR (status = 'PROCESSING' AND created_at < :cutoff)
                 ORDER BY created_at
                 LIMIT 100
                 FOR UPDATE SKIP LOCKED
                 """;
+        MapSqlParameterSource params = new MapSqlParameterSource("cutoff", Timestamp.from(processingCutoff));
         try {
-            return jdbcTemplate.query(sql, new MapSqlParameterSource(), (rs, rowNum) -> new OutboxEvent(
+            return jdbcTemplate.query(sql, params, (rs, rowNum) -> new OutboxEvent(
                     rs.getLong("id"),
                     rs.getString("aggregate_type"),
                     rs.getString("aggregate_id"),
                     rs.getString("event_type"),
                     rs.getString("payload"),
                     rs.getString("status"),
+                    rs.getInt("retry_count"),
                     rs.getTimestamp("created_at").toInstant()
             ));
         } catch (org.springframework.dao.DataAccessException e) {
@@ -445,6 +495,19 @@ public class InventoryJdbcRepository {
             jdbcTemplate.update(sql, params);
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to update outbox event status", e);
+        }
+    }
+
+    public void incrementOutboxEventRetry(long id, int newRetryCount, String status) {
+        String sql = "UPDATE outbox_events SET status = :status, retry_count = :retryCount WHERE id = :id";
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("id", id)
+                .addValue("status", status)
+                .addValue("retryCount", newRetryCount);
+        try {
+            jdbcTemplate.update(sql, params);
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to increment outbox event retry count", e);
         }
     }
 
