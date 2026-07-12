@@ -12,6 +12,7 @@ import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
 
+import org.springframework.beans.factory.annotation.Value;
 import java.io.PrintWriter;
 import java.math.BigDecimal;
 import java.sql.ResultSet;
@@ -27,9 +28,14 @@ public class InventoryJdbcRepository {
 
     private final NamedParameterJdbcTemplate jdbcTemplate;
     private final RowMapper<Item> itemRowMapper = (rs, rowNum) -> mapRow(rs);
+    private final int defaultLowStockThreshold;
 
-    public InventoryJdbcRepository(NamedParameterJdbcTemplate jdbcTemplate) {
+    public InventoryJdbcRepository(
+            NamedParameterJdbcTemplate jdbcTemplate,
+            @Value("${inventory.default-low-stock-threshold:5}") int defaultLowStockThreshold
+    ) {
         this.jdbcTemplate = jdbcTemplate;
+        this.defaultLowStockThreshold = defaultLowStockThreshold;
         // Configure fetch size of 500 on underlying JdbcTemplate for large streaming queries
         this.jdbcTemplate.getJdbcTemplate().setFetchSize(500);
     }
@@ -251,7 +257,7 @@ public class InventoryJdbcRepository {
                 .addValue("quantity", quantity)
                 .addValue("unitPrice", unitPrice)
                 .addValue("category", normalizeCategory(category))
-                .addValue("lowStockThreshold", lowStockThreshold != null ? lowStockThreshold : 5)
+                .addValue("lowStockThreshold", lowStockThreshold != null ? lowStockThreshold : defaultLowStockThreshold)
                 .addValue("updatedAt", Timestamp.from(Instant.now()))
                 .addValue("id", id);
         try {
@@ -280,7 +286,7 @@ public class InventoryJdbcRepository {
                 """;
         Instant now = Instant.now();
         String normalizedCategory = normalizeCategory(category);
-        int threshold = lowStockThreshold != null ? lowStockThreshold : 5;
+        int threshold = lowStockThreshold != null ? lowStockThreshold : defaultLowStockThreshold;
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("sku", sku.trim())
                 .addValue("name", name.trim())
@@ -337,10 +343,11 @@ public class InventoryJdbcRepository {
         String sql = """
                 UPDATE items
                 SET quantity = :newQuantity, updated_at = :updatedAt
-                WHERE id = :id AND archived = false
+                WHERE id = :id AND quantity = :previousQty AND archived = false
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("newQuantity", newQty)
+                .addValue("previousQty", previousQty)
                 .addValue("updatedAt", Timestamp.from(Instant.now()))
                 .addValue("id", current.id());
         try {
@@ -356,7 +363,7 @@ public class InventoryJdbcRepository {
     }
 
     public Optional<Item> adjustQuantity(long id, int delta, String operator) {
-        Optional<Item> currentOpt = findByIdForUpdate(id);
+        Optional<Item> currentOpt = findById(id);
         if (currentOpt.isEmpty()) {
             return Optional.empty();
         }
@@ -526,10 +533,7 @@ public class InventoryJdbcRepository {
             return "General";
         }
         String trimmed = category.trim();
-        if (trimmed.isEmpty()) {
-            return "General";
-        }
-        return trimmed.substring(0, 1).toUpperCase() + trimmed.substring(1).toLowerCase();
+        return trimmed.isEmpty() ? "General" : trimmed;
     }
 
     public void purgeOldTransactions(int daysToKeep) {

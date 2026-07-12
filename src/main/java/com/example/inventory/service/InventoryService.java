@@ -68,21 +68,25 @@ public class InventoryService {
 
     public Optional<Item> adjustStock(long id, AdjustQuantityRequest request, String operator) {
         logger.info("Adjusting stock for ID {}: delta={}", id, request.delta());
-        // ponytail: query state before adjust to verify boundary transition
-        Optional<Item> currentOpt = repository.findByIdForUpdate(id);
-        if (currentOpt.isEmpty()) {
-            return Optional.empty();
-        }
-        Item before = currentOpt.get();
-        Optional<Item> result = repository.adjustQuantity(before, request.delta(), operator);
-        if (result.isPresent()) {
-            Item after = result.get();
-            if (before.quantity() >= before.lowStockThreshold() && after.quantity() < after.lowStockThreshold()) {
-                logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", after.sku(), after.quantity());
-                eventPublisher.publishEvent(new LowStockEvent(this, after));
+        int maxRetries = 3;
+        for (int attempt = 0; attempt < maxRetries; attempt++) {
+            Optional<Item> currentOpt = repository.findById(id);
+            if (currentOpt.isEmpty()) {
+                return Optional.empty();
             }
+            Item before = currentOpt.get();
+            Optional<Item> result = repository.adjustQuantity(before, request.delta(), operator);
+            if (result.isPresent()) {
+                Item after = result.get();
+                if (before.quantity() >= before.lowStockThreshold() && after.quantity() < after.lowStockThreshold()) {
+                    logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", after.sku(), after.quantity());
+                    eventPublisher.publishEvent(new LowStockEvent(this, after));
+                }
+                return result;
+            }
+            logger.warn("Concurrency conflict during stock adjustment for ID {}, retrying (attempt {} of {})...", id, attempt + 1, maxRetries);
         }
-        return result;
+        throw new IllegalStateException("Failed to adjust stock due to concurrent modification after " + maxRetries + " attempts");
     }
 
     @Transactional(readOnly = true)
@@ -101,8 +105,8 @@ public class InventoryService {
     }
 
     @Transactional(readOnly = true)
-    public List<Item> getItemsForExport(String search, String category) {
-        logger.info("Fetching items for export");
-        return repository.findItemsForExport(search, category);
+    public void exportToWriter(PrintWriter writer, String search, String category) {
+        logger.info("Streaming inventory export directly to writer");
+        repository.streamAll(writer, search, category);
     }
 }

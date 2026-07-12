@@ -92,26 +92,13 @@ public class InventoryController {
     ) throws IOException {
         logger.info("REST request to export CSV via stream");
         
-        List<Item> items = inventoryService.getItemsForExport(search, category);
-        
         response.setContentType("text/csv");
         response.setCharacterEncoding("UTF-8");
         response.setHeader("Content-Disposition", "attachment; filename=\"inventory-export.csv\"");
         
         try (PrintWriter writer = response.getWriter()) {
             writer.println("id,sku,name,quantity,unitPrice,category,updatedAt,lowStockThreshold");
-            for (Item item : items) {
-                writer.println(String.format("%s,%s,%s,%d,%s,%s,%s,%d",
-                        item.id() != null ? item.id().toString() : "",
-                        csvEscape(item.sku()),
-                        csvEscape(item.name()),
-                        item.quantity(),
-                        item.unitPrice().toString(),
-                        csvEscape(item.category()),
-                        item.updatedAt().toString(),
-                        item.lowStockThreshold()
-                ));
-            }
+            inventoryService.exportToWriter(writer, search, category);
         }
     }
 

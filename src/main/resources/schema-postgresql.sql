@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 
 ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
 
-CREATE INDEX IF NOT EXISTS idx_items_lower_sku ON items ((LOWER(sku)));
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX IF NOT EXISTS idx_items_lower_sku_trgm ON items USING gin ((LOWER(sku)) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_items_lower_category ON items ((LOWER(category)));
-CREATE INDEX IF NOT EXISTS idx_items_lower_name ON items ((LOWER(name)));
+CREATE INDEX IF NOT EXISTS idx_items_lower_name_trgm ON items USING gin ((LOWER(name)) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_items_quantity ON items (quantity, archived);
+

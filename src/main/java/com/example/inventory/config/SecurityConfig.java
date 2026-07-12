@@ -49,9 +49,10 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.GET, "/api/items/**").permitAll()
                 .requestMatchers("/h2-console/**", "/actuator/**", "/", "/index.html", "/styles.css", "/app.js").permitAll()
-                .requestMatchers(HttpMethod.POST, "/api/items/**").authenticated()
-                .requestMatchers(HttpMethod.DELETE, "/api/items/**").authenticated()
-                .requestMatchers(HttpMethod.PATCH, "/api/items/**").authenticated()
+                .requestMatchers(HttpMethod.POST, "/api/items/**").hasRole("ADMIN")
+                .requestMatchers(HttpMethod.DELETE, "/api/items/**").hasRole("ADMIN")
+                .requestMatchers(HttpMethod.PATCH, "/api/items/**").hasAnyRole("ADMIN", "OPERATOR")
+                .requestMatchers("/api/reports/**").hasAnyRole("ADMIN", "AUDITOR")
                 .anyRequest().authenticated()
             )
             .httpBasic(Customizer.withDefaults());
@@ -75,12 +76,12 @@ public class SecurityConfig {
 
         UserDetails op1 = User.withUsername("Operator-1")
             .password(encodedPassword)
-            .roles("USER")
+            .roles("OPERATOR")
             .build();
 
         UserDetails op2 = User.withUsername("Operator-2")
             .password(encodedPassword)
-            .roles("USER")
+            .roles("OPERATOR")
             .build();
 
         UserDetails mgr = User.withUsername("Manager-Admin")
@@ -90,7 +91,7 @@ public class SecurityConfig {
 
         UserDetails aud = User.withUsername("Auditor-External")
             .password(encodedPassword)
-            .roles("USER")
+            .roles("AUDITOR")
             .build();
 
         return new InMemoryUserDetailsManager(adminUser, op1, op2, mgr, aud);
