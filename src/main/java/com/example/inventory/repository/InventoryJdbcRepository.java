@@ -11,6 +11,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
+import com.example.inventory.util.CsvUtils;
 
 import org.springframework.beans.factory.annotation.Value;
 import java.io.PrintWriter;
@@ -138,11 +139,11 @@ public class InventoryJdbcRepository {
                 Item item = mapRow(rs);
                 writer.println(String.format("%s,%s,%s,%d,%s,%s,%s,%d",
                         item.id() != null ? item.id().toString() : "",
-                        csvEscape(item.sku()),
-                        csvEscape(item.name()),
+                        CsvUtils.escape(item.sku()),
+                        CsvUtils.escape(item.name()),
                         item.quantity(),
                         item.unitPrice().toString(),
-                        csvEscape(item.category()),
+                        CsvUtils.escape(item.category()),
                         item.updatedAt().toString(),
                         item.lowStockThreshold()
                 ));
@@ -150,15 +151,6 @@ public class InventoryJdbcRepository {
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to stream items", e);
         }
-    }
-
-    private String csvEscape(String s) {
-        if (s == null) return "";
-        String escaped = s.replace("\"", "\"\"");
-        if (escaped.contains(",") || escaped.contains("\"") || escaped.contains("\n") || escaped.contains("\r")) {
-            return "\"" + escaped + "\"";
-        }
-        return escaped;
     }
 
     public Optional<Item> findById(long id) {
@@ -333,41 +325,38 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public Optional<Item> adjustQuantity(Item current, int delta, String operator) {
-        int previousQty = current.quantity();
-        int newQty = previousQty + delta;
-        if (newQty < 0) {
-            throw new IllegalArgumentException("Insufficient stock: Current quantity is " + previousQty + ", adjustment was " + delta);
-        }
-
+    public Optional<Item> adjustQuantity(long id, int delta, String operator) {
         String sql = """
                 UPDATE items
-                SET quantity = :newQuantity, updated_at = :updatedAt
-                WHERE id = :id AND quantity = :previousQty AND archived = false
+                SET quantity = quantity + :delta, updated_at = :updatedAt
+                WHERE id = :id AND quantity + :delta >= 0 AND archived = false
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource()
-                .addValue("newQuantity", newQty)
-                .addValue("previousQty", previousQty)
+                .addValue("delta", delta)
                 .addValue("updatedAt", Timestamp.from(Instant.now()))
-                .addValue("id", current.id());
+                .addValue("id", id);
         try {
             int updated = jdbcTemplate.update(sql, params);
             if (updated == 0) {
-                return Optional.empty();
+                // If 0 rows updated, verify if the item exists at all to throw correct exception
+                Optional<Item> currentOpt = findById(id);
+                if (currentOpt.isEmpty()) {
+                    return Optional.empty();
+                }
+                throw new IllegalArgumentException("Insufficient stock for adjustment");
             }
-            logTransaction(current.id(), current.sku(), delta, previousQty, newQty, delta >= 0 ? "RESTOCK" : "DISPATCH", operator);
-            return findById(current.id());
+            Optional<Item> updatedItemOpt = findById(id);
+            if (updatedItemOpt.isPresent()) {
+                Item updatedItem = updatedItemOpt.get();
+                int newQty = updatedItem.quantity();
+                int previousQty = newQty - delta;
+                logTransaction(id, updatedItem.sku(), delta, previousQty, newQty, delta >= 0 ? "RESTOCK" : "DISPATCH", operator);
+                return updatedItemOpt;
+            }
+            return Optional.empty();
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to adjust quantity", e);
         }
-    }
-
-    public Optional<Item> adjustQuantity(long id, int delta, String operator) {
-        Optional<Item> currentOpt = findById(id);
-        if (currentOpt.isEmpty()) {
-            return Optional.empty();
-        }
-        return adjustQuantity(currentOpt.get(), delta, operator);
     }
 
     public InventoryReport buildReport(int defaultThreshold) {
@@ -502,6 +491,19 @@ public class InventoryJdbcRepository {
             jdbcTemplate.update(sql, params);
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to update outbox event status", e);
+        }
+    }
+
+    public void updateOutboxEventsStatus(List<Long> ids, String status) {
+        if (ids == null || ids.isEmpty()) return;
+        String sql = "UPDATE outbox_events SET status = :status WHERE id IN (:ids)";
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("ids", ids)
+                .addValue("status", status);
+        try {
+            jdbcTemplate.update(sql, params);
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to bulk update outbox events status", e);
         }
     }
 

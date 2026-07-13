@@ -68,25 +68,16 @@ public class InventoryService {
 
     public Optional<Item> adjustStock(long id, AdjustQuantityRequest request, String operator) {
         logger.info("Adjusting stock for ID {}: delta={}", id, request.delta());
-        int maxRetries = 3;
-        for (int attempt = 0; attempt < maxRetries; attempt++) {
-            Optional<Item> currentOpt = repository.findById(id);
-            if (currentOpt.isEmpty()) {
-                return Optional.empty();
+        Optional<Item> result = repository.adjustQuantity(id, request.delta(), operator);
+        if (result.isPresent()) {
+            Item after = result.get();
+            int beforeQty = after.quantity() - request.delta();
+            if (beforeQty >= after.lowStockThreshold() && after.quantity() < after.lowStockThreshold()) {
+                logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", after.sku(), after.quantity());
+                eventPublisher.publishEvent(new LowStockEvent(this, after));
             }
-            Item before = currentOpt.get();
-            Optional<Item> result = repository.adjustQuantity(before, request.delta(), operator);
-            if (result.isPresent()) {
-                Item after = result.get();
-                if (before.quantity() >= before.lowStockThreshold() && after.quantity() < after.lowStockThreshold()) {
-                    logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", after.sku(), after.quantity());
-                    eventPublisher.publishEvent(new LowStockEvent(this, after));
-                }
-                return result;
-            }
-            logger.warn("Concurrency conflict during stock adjustment for ID {}, retrying (attempt {} of {})...", id, attempt + 1, maxRetries);
         }
-        throw new IllegalStateException("Failed to adjust stock due to concurrent modification after " + maxRetries + " attempts");
+        return result;
     }
 
     @Transactional(readOnly = true)

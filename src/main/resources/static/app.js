@@ -6,13 +6,9 @@ function getCookie(name) {
 }
 
 const api = (path, options = {}) => {
-  const operatorSelect = document.getElementById("operator-select");
-  const userId = operatorSelect ? operatorSelect.value : "anonymous";
-  const authHeader = "Basic " + btoa(userId + ":password");
   const csrfToken = getCookie("XSRF-TOKEN");
   const headers = { 
     "Content-Type": "application/json", 
-    "Authorization": authHeader, 
     ...options.headers 
   };
   if (csrfToken) {

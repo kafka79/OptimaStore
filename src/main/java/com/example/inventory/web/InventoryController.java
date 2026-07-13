@@ -102,15 +102,6 @@ public class InventoryController {
         }
     }
 
-    private String csvEscape(String s) {
-        if (s == null) return "";
-        String escaped = s.replace("\"", "\"\"");
-        if (escaped.contains(",") || escaped.contains("\"") || escaped.contains("\n") || escaped.contains("\r")) {
-            return "\"" + escaped + "\"";
-        }
-        return escaped;
-    }
-
     @GetMapping("/categories")
     public List<String> categories() {
         logger.info("REST request to list distinct categories");
