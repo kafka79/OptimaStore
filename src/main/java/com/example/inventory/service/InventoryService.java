@@ -2,8 +2,9 @@ package com.example.inventory.service;
 
 import com.example.inventory.dto.AdjustQuantityRequest;
 import com.example.inventory.dto.CreateItemRequest;
-import com.example.inventory.dto.PageResponse;
+import com.example.inventory.dto.CursorResponse;
 import com.example.inventory.event.LowStockEvent;
+import com.example.inventory.exception.IdempotencyException;
 import com.example.inventory.model.InventoryReport;
 import com.example.inventory.model.Item;
 import com.example.inventory.repository.InventoryJdbcRepository;
@@ -31,16 +32,11 @@ public class InventoryService {
         this.eventPublisher = eventPublisher;
     }
 
-    @Transactional(readOnly = true)
-    public List<Item> listItems() {
-        logger.info("Fetching all items without pagination");
-        return repository.findAll();
-    }
 
     @Transactional(readOnly = true)
-    public PageResponse<Item> listItems(int page, int size, String search, String category) {
-        logger.info("Fetching items page={}, size={}, search={}, category={}", page, size, search, category);
-        return repository.findAll(page, size, search, category);
+    public CursorResponse<Item> listItems(Long lastId, int size, String search, String category) {
+        logger.info("Fetching items lastId={}, size={}, search={}, category={}", lastId, size, search, category);
+        return repository.findAll(lastId, size, search, category);
     }
 
     public Item addItem(CreateItemRequest request, String operator) {
@@ -66,8 +62,17 @@ public class InventoryService {
         return repository.deleteById(id, operator);
     }
 
-    public Optional<Item> adjustStock(long id, AdjustQuantityRequest request, String operator) {
-        logger.info("Adjusting stock for ID {}: delta={}", id, request.delta());
+    public Optional<Item> adjustStock(long id, AdjustQuantityRequest request, String operator, String idempotencyKey) {
+        logger.info("Adjusting stock for ID {}: delta={}, key={}", id, request.delta(), idempotencyKey);
+        
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            boolean isNew = repository.insertIdempotencyKey(idempotencyKey);
+            if (!isNew) {
+                logger.warn("Idempotency key already processed: {}", idempotencyKey);
+                throw new IdempotencyException("Request already processed for idempotency key: " + idempotencyKey);
+            }
+        }
+
         Optional<Item> result = repository.adjustQuantity(id, request.delta(), operator);
         if (result.isPresent()) {
             Item after = result.get();

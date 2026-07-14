@@ -19,6 +19,18 @@ public class GlobalExceptionHandler {
                 .body(new ErrorResponse("DUPLICATE_SKU", ex.getMessage()));
     }
 
+    @ExceptionHandler(com.example.inventory.exception.IdempotencyException.class)
+    public ResponseEntity<ErrorResponse> handleIdempotency(com.example.inventory.exception.IdempotencyException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorResponse("IDEMPOTENCY_CONFLICT", ex.getMessage()));
+    }
+
+    @ExceptionHandler(com.example.inventory.exception.RateLimitException.class)
+    public ResponseEntity<ErrorResponse> handleRateLimit(com.example.inventory.exception.RateLimitException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .body(new ErrorResponse("TOO_MANY_REQUESTS", ex.getMessage()));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)

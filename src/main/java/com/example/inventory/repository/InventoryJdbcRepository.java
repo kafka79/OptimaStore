@@ -4,7 +4,7 @@ import com.example.inventory.exception.DuplicateSkuException;
 import com.example.inventory.model.InventoryReport;
 import com.example.inventory.model.Item;
 import com.example.inventory.model.OutboxEvent;
-import com.example.inventory.dto.PageResponse;
+import com.example.inventory.dto.CursorResponse;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -22,6 +22,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Repository
@@ -41,53 +42,35 @@ public class InventoryJdbcRepository {
         this.jdbcTemplate.getJdbcTemplate().setFetchSize(500);
     }
 
-    public List<Item> findAll() {
-        String sql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
-                FROM items WHERE archived = false ORDER BY name
-                """;
-        try {
-            return jdbcTemplate.query(sql, itemRowMapper);
-        } catch (org.springframework.dao.DataAccessException e) {
-            throw new IllegalStateException("Failed to load items", e);
-        }
-    }
 
-    public PageResponse<Item> findAll(int page, int size, String search, String category) {
-        StringBuilder countSql = new StringBuilder("SELECT COUNT(*) FROM items WHERE archived = false");
+
+    public CursorResponse<Item> findAll(Long lastId, int size, String search, String category) {
         StringBuilder selectSql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items WHERE archived = false");
         MapSqlParameterSource params = new MapSqlParameterSource();
 
+        if (lastId != null) {
+            selectSql.append(" AND id > :lastId");
+            params.addValue("lastId", lastId);
+        }
+
         if (search != null && !search.trim().isEmpty()) {
             String searchPattern = "%" + search.trim().toLowerCase() + "%";
-            countSql.append(" AND (LOWER(sku) LIKE :searchPattern OR LOWER(name) LIKE :searchPattern)");
             selectSql.append(" AND (LOWER(sku) LIKE :searchPattern OR LOWER(name) LIKE :searchPattern)");
             params.addValue("searchPattern", searchPattern);
         }
 
         if (category != null && !category.trim().isEmpty() && !category.equalsIgnoreCase("all")) {
-            countSql.append(" AND LOWER(category) = :category");
             selectSql.append(" AND LOWER(category) = :category");
             params.addValue("category", category.trim().toLowerCase());
         }
 
-        long totalItems = 0;
-        try {
-            Long count = jdbcTemplate.queryForObject(countSql.toString(), params, Long.class);
-            if (count != null) {
-                totalItems = count;
-            }
-        } catch (org.springframework.dao.DataAccessException e) {
-            throw new IllegalStateException("Failed to count items", e);
-        }
-
-        selectSql.append(" ORDER BY name LIMIT :limit OFFSET :offset");
+        selectSql.append(" ORDER BY id ASC LIMIT :limit");
         params.addValue("limit", size);
-        params.addValue("offset", page * size);
 
         try {
             List<Item> items = jdbcTemplate.query(selectSql.toString(), params, itemRowMapper);
-            return new PageResponse<>(items, page, size, totalItems);
+            Long nextCursor = items.isEmpty() ? null : items.get(items.size() - 1).id();
+            return new CursorResponse<>(items, nextCursor);
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to page items", e);
         }
@@ -437,6 +420,19 @@ public class InventoryJdbcRepository {
             return ((Number) firstValue).longValue();
         }
         throw new IllegalStateException("No numeric generated key found");
+    }
+
+    public boolean insertIdempotencyKey(String key) {
+        String sql = "INSERT INTO idempotency_keys (idempotency_key, created_at) VALUES (:key, :createdAt)";
+        try {
+            int updated = jdbcTemplate.update(sql, Map.of(
+                    "key", key,
+                    "createdAt", Timestamp.from(Instant.now())
+            ));
+            return updated > 0;
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            return false;
+        }
     }
 
     public void insertOutboxEvent(String aggregateType, String aggregateId, String eventType, String payload) {

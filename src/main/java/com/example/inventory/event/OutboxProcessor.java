@@ -31,20 +31,23 @@ public class OutboxProcessor {
     private final Counter successCounter;
     private final Counter failedCounter;
 
-    public OutboxProcessor(InventoryJdbcRepository repository, MessagePublisher messagePublisher, TransactionTemplate transactionTemplate, MeterRegistry meterRegistry) {
+    public OutboxProcessor(InventoryJdbcRepository repository, MessagePublisher messagePublisher, org.springframework.transaction.PlatformTransactionManager transactionManager, MeterRegistry meterRegistry) {
         this.repository = repository;
         this.messagePublisher = messagePublisher;
-        this.transactionTemplate = transactionTemplate;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.transactionTemplate.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.transactionTemplate.setTimeout(30);
         
         this.processTimer = meterRegistry.timer("outbox.process.time");
         this.successCounter = meterRegistry.counter("outbox.events.processed.success");
         this.failedCounter = meterRegistry.counter("outbox.events.processed.failed");
 
         this.executor = new ThreadPoolTaskExecutor();
-        this.executor.setCorePoolSize(1);
-        this.executor.setMaxPoolSize(1);
-        this.executor.setQueueCapacity(10);
+        this.executor.setCorePoolSize(5);
+        this.executor.setMaxPoolSize(10);
+        this.executor.setQueueCapacity(50);
         this.executor.setThreadNamePrefix("outbox-worker-");
+        this.executor.setRejectedExecutionHandler(new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
         this.executor.initialize();
     }
 

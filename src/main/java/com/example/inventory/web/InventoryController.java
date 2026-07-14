@@ -2,7 +2,7 @@ package com.example.inventory.web;
 
 import com.example.inventory.dto.AdjustQuantityRequest;
 import com.example.inventory.dto.CreateItemRequest;
-import com.example.inventory.dto.PageResponse;
+import com.example.inventory.dto.CursorResponse;
 import com.example.inventory.exception.DuplicateSkuException;
 import com.example.inventory.model.Item;
 import com.example.inventory.service.InventoryService;
@@ -42,14 +42,14 @@ public class InventoryController {
     }
 
     @GetMapping
-    public PageResponse<Item> list(
-            @RequestParam(defaultValue = "0") int page,
+    public CursorResponse<Item> list(
+            @RequestParam(required = false) Long lastId,
             @RequestParam(defaultValue = "10") int size,
             @RequestParam(required = false) String search,
             @RequestParam(required = false) String category
     ) {
-        logger.info("REST request to list items: page={}, size={}, search={}, category={}", page, size, search, category);
-        return inventoryService.listItems(page, size, search, category);
+        logger.info("REST request to list items: lastId={}, size={}, search={}, category={}", lastId, size, search, category);
+        return inventoryService.listItems(lastId, size, search, category);
     }
 
     @PostMapping
@@ -76,12 +76,13 @@ public class InventoryController {
     @PatchMapping("/{id}/quantity")
     public ResponseEntity<Item> adjustQuantity(
             @PathVariable long id,
-            @Valid @RequestBody AdjustQuantityRequest body
+            @Valid @RequestBody AdjustQuantityRequest body,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey
     ) {
         logger.info("REST request to adjust item quantity: id={}, delta={}", id, body.delta());
-        return inventoryService.adjustStock(id, body, getOperator())
+        return inventoryService.adjustStock(id, body, getOperator(), idempotencyKey)
                 .map(ResponseEntity::ok)
-                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND, "Item not found"));
+                .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/export")
@@ -99,6 +100,7 @@ public class InventoryController {
         try (PrintWriter writer = response.getWriter()) {
             writer.println("id,sku,name,quantity,unitPrice,category,updatedAt,lowStockThreshold");
             inventoryService.exportToWriter(writer, search, category);
+            response.flushBuffer();
         }
     }
 

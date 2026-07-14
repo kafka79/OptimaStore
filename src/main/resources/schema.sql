@@ -36,7 +36,25 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 
 ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
 
-CREATE INDEX IF NOT EXISTS idx_items_sku ON items (sku);
-CREATE INDEX IF NOT EXISTS idx_items_category ON items (category);
-CREATE INDEX IF NOT EXISTS idx_items_name ON items (name);
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    idempotency_key VARCHAR(255) PRIMARY KEY,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+
 CREATE INDEX IF NOT EXISTS idx_items_quantity ON items (quantity, archived);
+CREATE INDEX IF NOT EXISTS idx_items_archived_id ON items (archived, id);
+CREATE INDEX IF NOT EXISTS idx_outbox_status_created ON outbox_events (status, created_at);
+
+CREATE TABLE IF NOT EXISTS users (
+    username VARCHAR(50) NOT NULL PRIMARY KEY,
+    password VARCHAR(500) NOT NULL,
+    enabled BOOLEAN NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS authorities (
+    username VARCHAR(50) NOT NULL,
+    authority VARCHAR(50) NOT NULL,
+    CONSTRAINT fk_authorities_users FOREIGN KEY(username) REFERENCES users(username)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_auth_username ON authorities (username, authority);

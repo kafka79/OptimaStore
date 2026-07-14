@@ -2,7 +2,7 @@ package com.example.inventory.service;
 
 import com.example.inventory.dto.AdjustQuantityRequest;
 import com.example.inventory.dto.CreateItemRequest;
-import com.example.inventory.dto.PageResponse;
+import com.example.inventory.dto.CursorResponse;
 import com.example.inventory.model.InventoryReport;
 import com.example.inventory.model.Item;
 import com.example.inventory.repository.InventoryJdbcRepository;
@@ -38,26 +38,17 @@ class InventoryServiceTests {
         MockitoAnnotations.openMocks(this);
     }
 
-    @Test
-    void testListItemsAll() {
-        Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false, 5);
-        when(repository.findAll()).thenReturn(List.of(item));
-
-        List<Item> result = service.listItems();
-        assertEquals(1, result.size());
-        assertEquals("SKU1", result.get(0).sku());
-    }
 
     @Test
     void testListItemsPaginated() {
         Item item = new Item(1L, "SKU1", "Name1", 10, BigDecimal.TEN, "Category", Instant.now(), false, 5);
-        PageResponse<Item> pageResponse = new PageResponse<>(List.of(item), 0, 10, 1);
-        when(repository.findAll(0, 10, "SKU1", "Category")).thenReturn(pageResponse);
+        CursorResponse<Item> cursorResponse = new CursorResponse<>(List.of(item), 1L);
+        when(repository.findAll(0L, 10, "SKU1", "Category")).thenReturn(cursorResponse);
 
-        PageResponse<Item> result = service.listItems(0, 10, "SKU1", "Category");
-        assertEquals(1, result.totalElements());
-        assertEquals(1, result.content().size());
-        assertEquals("SKU1", result.content().get(0).sku());
+        CursorResponse<Item> result = service.listItems(0L, 10, "SKU1", "Category");
+        assertEquals(1L, result.nextCursor());
+        assertEquals(1, result.items().size());
+        assertEquals("SKU1", result.items().get(0).sku());
     }
 
     @Test
@@ -87,7 +78,7 @@ class InventoryServiceTests {
         Item afterItem = new Item(1L, "SKU1", "Name1", 15, BigDecimal.TEN, "Category", Instant.now(), false, 5);
         when(repository.adjustQuantity(eq(1L), eq(5), anyString())).thenReturn(Optional.of(afterItem));
 
-        Optional<Item> result = service.adjustStock(1L, request, "operator");
+        Optional<Item> result = service.adjustStock(1L, request, "operator", null);
         assertTrue(result.isPresent());
         assertEquals(15, result.get().quantity());
     }
@@ -99,7 +90,7 @@ class InventoryServiceTests {
         Item afterItem = new Item(1L, "SKU1", "Name1", 2, BigDecimal.TEN, "Category", Instant.now(), false, 5);
         when(repository.adjustQuantity(eq(1L), eq(-1), anyString())).thenReturn(Optional.of(afterItem));
 
-        service.adjustStock(1L, request, "operator");
+        service.adjustStock(1L, request, "operator", null);
         verify(eventPublisher, never()).publishEvent(any());
     }
 
@@ -110,7 +101,7 @@ class InventoryServiceTests {
         Item afterItem = new Item(1L, "SKU1", "Name1", 4, BigDecimal.TEN, "Category", Instant.now(), false, 5);
         when(repository.adjustQuantity(eq(1L), eq(-2), anyString())).thenReturn(Optional.of(afterItem));
 
-        service.adjustStock(1L, request, "operator");
+        service.adjustStock(1L, request, "operator", null);
         verify(eventPublisher, times(1)).publishEvent(any(com.example.inventory.event.LowStockEvent.class));
     }
 

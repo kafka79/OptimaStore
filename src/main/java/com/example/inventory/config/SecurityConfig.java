@@ -66,35 +66,24 @@ public class SecurityConfig {
     }
 
     @Bean
-    public UserDetailsService userDetailsService(org.springframework.security.crypto.password.PasswordEncoder passwordEncoder) {
+    public UserDetailsService userDetailsService(javax.sql.DataSource dataSource, org.springframework.security.crypto.password.PasswordEncoder passwordEncoder) {
+        org.springframework.security.provisioning.JdbcUserDetailsManager manager = new org.springframework.security.provisioning.JdbcUserDetailsManager(dataSource);
+        
         String encodedPassword = passwordEncoder.encode(password);
         
-        UserDetails adminUser = User.withUsername(username)
-            .password(encodedPassword)
-            .roles("USER", "ADMIN")
-            .build();
+        try {
+            if (!manager.userExists(username)) {
+                manager.createUser(User.withUsername(username).password(encodedPassword).roles("USER", "ADMIN").build());
+                manager.createUser(User.withUsername("Operator-1").password(encodedPassword).roles("OPERATOR").build());
+                manager.createUser(User.withUsername("Operator-2").password(encodedPassword).roles("OPERATOR").build());
+                manager.createUser(User.withUsername("Manager-Admin").password(encodedPassword).roles("USER", "ADMIN").build());
+                manager.createUser(User.withUsername("Auditor-External").password(encodedPassword).roles("AUDITOR").build());
+            }
+        } catch (Exception e) {
+            // Tables might not be initialized yet in some profiles, but schema.sql is set to always run
+        }
 
-        UserDetails op1 = User.withUsername("Operator-1")
-            .password(encodedPassword)
-            .roles("OPERATOR")
-            .build();
-
-        UserDetails op2 = User.withUsername("Operator-2")
-            .password(encodedPassword)
-            .roles("OPERATOR")
-            .build();
-
-        UserDetails mgr = User.withUsername("Manager-Admin")
-            .password(encodedPassword)
-            .roles("USER", "ADMIN")
-            .build();
-
-        UserDetails aud = User.withUsername("Auditor-External")
-            .password(encodedPassword)
-            .roles("AUDITOR")
-            .build();
-
-        return new InMemoryUserDetailsManager(adminUser, op1, op2, mgr, aud);
+        return manager;
     }
 
     private static class CsrfCookieFilter extends OncePerRequestFilter {

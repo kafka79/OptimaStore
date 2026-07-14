@@ -1,6 +1,6 @@
 package com.example.inventory.repository;
 
-import com.example.inventory.dto.PageResponse;
+import com.example.inventory.dto.CursorResponse;
 import com.example.inventory.model.InventoryReport;
 import com.example.inventory.model.Item;
 import org.junit.jupiter.api.BeforeEach;
@@ -48,16 +48,14 @@ class InventoryJdbcRepositoryTests {
         repository.insert("SKU-B", "Banana", 20, new BigDecimal("0.80"), "Fruit", 5, "test-operator");
         repository.insert("SKU-C", "Cherry", 5, new BigDecimal("3.00"), "Fruit", 5, "test-operator");
 
-        PageResponse<Item> page = repository.findAll(0, 2, null, "Fruit");
-        assertEquals(3, page.totalElements());
-        assertEquals(2, page.content().size());
-        assertEquals("Apple", page.content().get(0).name());
-        assertEquals("Banana", page.content().get(1).name());
+        CursorResponse<Item> page = repository.findAll(null, 2, null, "Fruit");
+        assertEquals(2, page.items().size());
+        assertEquals("Apple", page.items().get(0).name());
+        assertEquals("Banana", page.items().get(1).name());
 
-        PageResponse<Item> page2 = repository.findAll(0, 2, "cherry", null);
-        assertEquals(1, page2.totalElements());
-        assertEquals(1, page2.content().size());
-        assertEquals("Cherry", page2.content().get(0).name());
+        CursorResponse<Item> page2 = repository.findAll(null, 2, "cherry", null);
+        assertEquals(1, page2.items().size());
+        assertEquals("Cherry", page2.items().get(0).name());
     }
 
     @Test
