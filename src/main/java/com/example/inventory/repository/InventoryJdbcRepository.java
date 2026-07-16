@@ -100,41 +100,7 @@ public class InventoryJdbcRepository {
         }
     }
 
-    public void streamAll(PrintWriter writer, String search, String category) {
-        StringBuilder sql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items WHERE archived = false");
-        MapSqlParameterSource params = new MapSqlParameterSource();
-
-        if (search != null && !search.trim().isEmpty()) {
-            String searchPattern = "%" + search.trim().toLowerCase() + "%";
-            sql.append(" AND (LOWER(sku) LIKE :searchPattern OR LOWER(name) LIKE :searchPattern)");
-            params.addValue("searchPattern", searchPattern);
-        }
-
-        if (category != null && !category.trim().isEmpty() && !category.equalsIgnoreCase("all")) {
-            sql.append(" AND LOWER(category) = :category");
-            params.addValue("category", category.trim().toLowerCase());
-        }
-
-        sql.append(" ORDER BY name");
-
-        try {
-            jdbcTemplate.query(sql.toString(), params, rs -> {
-                Item item = mapRow(rs);
-                writer.println(String.format("%s,%s,%s,%d,%s,%s,%s,%d",
-                        item.id() != null ? item.id().toString() : "",
-                        CsvUtils.escape(item.sku()),
-                        CsvUtils.escape(item.name()),
-                        item.quantity(),
-                        item.unitPrice().toString(),
-                        CsvUtils.escape(item.category()),
-                        item.updatedAt().toString(),
-                        item.lowStockThreshold()
-                ));
-            });
-        } catch (org.springframework.dao.DataAccessException e) {
-            throw new IllegalStateException("Failed to stream items", e);
-        }
-    }
+    // streamAll removed to fix connection pool starvation
 
     public Optional<Item> findById(long id) {
         String sql = """
@@ -247,12 +213,7 @@ public class InventoryJdbcRepository {
     public Item insert(String sku, String name, int quantity, BigDecimal unitPrice, String category, Integer lowStockThreshold, String operator) {
         Optional<Item> existingOpt = findBySkuAny(sku);
         if (existingOpt.isPresent()) {
-            Item existing = existingOpt.get();
-            if (existing.archived()) {
-                return reactivateItem(existing.id(), name, quantity, unitPrice, category, lowStockThreshold, operator);
-            } else {
-                throw new DuplicateSkuException(sku.trim(), null);
-            }
+            throw new DuplicateSkuException(sku.trim(), null);
         }
 
         String sql = """
@@ -432,6 +393,28 @@ public class InventoryJdbcRepository {
             return updated > 0;
         } catch (org.springframework.dao.DuplicateKeyException e) {
             return false;
+        }
+    }
+
+    public Optional<String> getIdempotencyResponse(String key) {
+        String sql = "SELECT response_payload FROM idempotency_keys WHERE idempotency_key = :key";
+        try {
+            List<String> results = jdbcTemplate.query(sql, Map.of("key", key), (rs, rowNum) -> rs.getString("response_payload"));
+            return results.isEmpty() ? Optional.empty() : Optional.ofNullable(results.get(0));
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to check idempotency key", e);
+        }
+    }
+
+    public void updateIdempotencyResponse(String key, String payload) {
+        String sql = "UPDATE idempotency_keys SET response_payload = :payload WHERE idempotency_key = :key";
+        try {
+            jdbcTemplate.update(sql, Map.of(
+                    "key", key,
+                    "payload", payload
+            ));
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to update idempotency response", e);
         }
     }
 

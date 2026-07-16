@@ -1,44 +1,48 @@
 package com.example.inventory.web;
 
 import com.example.inventory.exception.RateLimitException;
-import io.github.bucket4j.Bandwidth;
-import io.github.bucket4j.Bucket;
-import io.github.bucket4j.Refill;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
+import io.micrometer.core.instrument.MeterRegistry;
 
-import java.time.Duration;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class RateLimitInterceptor implements HandlerInterceptor {
 
-    private final Map<String, Bucket> cache = new ConcurrentHashMap<>();
+    private final MeterRegistry meterRegistry;
+    private final StringRedisTemplate redisTemplate;
 
-    private Bucket resolveBucket(String ip) {
-        return cache.computeIfAbsent(ip, this::newBucket);
-    }
-
-    private Bucket newBucket(String ip) {
-        // Allow 50 requests per second per IP
-        Bandwidth limit = Bandwidth.classic(50, Refill.greedy(50, Duration.ofSeconds(1)));
-        return Bucket.builder()
-                .addLimit(limit)
-                .build();
+    public RateLimitInterceptor(MeterRegistry meterRegistry, StringRedisTemplate redisTemplate) {
+        this.meterRegistry = meterRegistry;
+        this.redisTemplate = redisTemplate;
     }
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
         String ip = request.getRemoteAddr();
-        Bucket bucket = resolveBucket(ip);
+        long currentSecond = System.currentTimeMillis() / 1000;
+        String key = "rate_limit:" + ip + ":" + currentSecond;
 
-        if (bucket.tryConsume(1)) {
+        try {
+            Long currentRequests = redisTemplate.opsForValue().increment(key);
+            if (currentRequests != null) {
+                if (currentRequests == 1) {
+                    redisTemplate.expire(key, 2, TimeUnit.SECONDS);
+                }
+                if (currentRequests <= 50) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            // Fail open if Redis is unavailable
             return true;
         }
 
+        meterRegistry.counter("rate.limit.rejected", "ip", ip).increment();
         throw new RateLimitException("Too many requests");
     }
 }

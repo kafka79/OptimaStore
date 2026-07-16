@@ -28,10 +28,10 @@ import java.io.IOException;
 @EnableWebSecurity
 public class SecurityConfig {
 
-    @Value("${auth.username:admin}")
+    @Value("${auth.username:#{null}}")
     private String username;
 
-    @Value("${auth.password:password}")
+    @Value("${auth.password:#{null}}")
     private String password;
 
     @Bean
@@ -66,24 +66,37 @@ public class SecurityConfig {
     }
 
     @Bean
-    public UserDetailsService userDetailsService(javax.sql.DataSource dataSource, org.springframework.security.crypto.password.PasswordEncoder passwordEncoder) {
-        org.springframework.security.provisioning.JdbcUserDetailsManager manager = new org.springframework.security.provisioning.JdbcUserDetailsManager(dataSource);
-        
-        String encodedPassword = passwordEncoder.encode(password);
-        
-        try {
-            if (!manager.userExists(username)) {
-                manager.createUser(User.withUsername(username).password(encodedPassword).roles("USER", "ADMIN").build());
-                manager.createUser(User.withUsername("Operator-1").password(encodedPassword).roles("OPERATOR").build());
-                manager.createUser(User.withUsername("Operator-2").password(encodedPassword).roles("OPERATOR").build());
-                manager.createUser(User.withUsername("Manager-Admin").password(encodedPassword).roles("USER", "ADMIN").build());
-                manager.createUser(User.withUsername("Auditor-External").password(encodedPassword).roles("AUDITOR").build());
-            }
-        } catch (Exception e) {
-            // Tables might not be initialized yet in some profiles, but schema.sql is set to always run
-        }
+    public org.springframework.security.provisioning.UserDetailsManager userDetailsService(javax.sql.DataSource dataSource) {
+        return new org.springframework.security.provisioning.JdbcUserDetailsManager(dataSource);
+    }
 
-        return manager;
+    @Bean
+    public org.springframework.boot.CommandLineRunner initUsers(
+            org.springframework.security.provisioning.UserDetailsManager manager,
+            org.springframework.security.crypto.password.PasswordEncoder passwordEncoder) {
+        return args -> {
+            java.util.concurrent.CompletableFuture.runAsync(() -> {
+                String actualUser = (username != null && !username.isBlank()) ? username : "admin";
+                
+                if (password == null || password.isBlank()) {
+                    throw new IllegalStateException("Security violation: 'auth.password' property MUST be provided securely (e.g. via environment variables).");
+                }
+                
+                String encodedPassword = passwordEncoder.encode(password);
+                
+                try {
+                    if (!manager.userExists(actualUser)) {
+                        manager.createUser(User.withUsername(actualUser).password(encodedPassword).roles("USER", "ADMIN").build());
+                        manager.createUser(User.withUsername("Operator-1").password(encodedPassword).roles("OPERATOR").build());
+                        manager.createUser(User.withUsername("Operator-2").password(encodedPassword).roles("OPERATOR").build());
+                        manager.createUser(User.withUsername("Manager-Admin").password(encodedPassword).roles("USER", "ADMIN").build());
+                        manager.createUser(User.withUsername("Auditor-External").password(encodedPassword).roles("AUDITOR").build());
+                    }
+                } catch (Exception e) {
+                    // Tables might not be initialized yet in some profiles
+                }
+            });
+        };
     }
 
     private static class CsrfCookieFilter extends OncePerRequestFilter {
