@@ -37,3 +37,5 @@ build/
 data/
 desktop.ini
 Desktop.ini
+.env
+.env.example
