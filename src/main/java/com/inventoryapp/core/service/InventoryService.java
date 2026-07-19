@@ -1,8 +1,10 @@
 package com.inventoryapp.core.service;
 
 import com.inventoryapp.core.dto.AdjustQuantityRequest;
+import com.inventoryapp.core.dto.BatchCreateItemRequest;
 import com.inventoryapp.core.dto.CreateItemRequest;
 import com.inventoryapp.core.dto.CursorResponse;
+import com.inventoryapp.core.dto.StockTransactionResponse;
 import com.inventoryapp.core.dto.UpdateItemRequest;
 import com.inventoryapp.core.event.LowStockEvent;
 import com.inventoryapp.core.exception.IdempotencyException;
@@ -24,6 +26,14 @@ import java.util.List;
 import java.util.Optional;
 
 @Service
+/**
+ * CRITICAL DEADLOCK PREVENTION RULE:
+ * When acquiring multiple locks in this service (e.g. Idempotency Key and Item),
+ * you MUST always acquire them in the exact same order:
+ * 1. Idempotency Key
+ * 2. Item
+ * Failing to follow this order can cause distributed deadlocks under heavy load.
+ */
 public class InventoryService {
 
     private static final Logger logger = LoggerFactory.getLogger(InventoryService.class);
@@ -66,11 +76,8 @@ public class InventoryService {
                 request.lowStockThreshold()
         );
         transactionRepository.logTransaction(item.id(), item.sku(), item.quantity(), 0, item.quantity(), "INITIAL_STOCK", operator);
-        
-        if (item.quantity() < item.lowStockThreshold()) {
-            logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", item.sku(), item.quantity());
-            eventPublisher.publishEvent(new LowStockEvent(this, item));
-        }
+
+        checkAndPublishLowStock(item);
         return item;
     }
 
@@ -102,75 +109,137 @@ public class InventoryService {
 
     public Optional<Item> adjustStock(long id, AdjustQuantityRequest request, String operator, String idempotencyKey) {
         logger.info("Adjusting stock for ID {}: delta={}, key={}", id, request.delta(), idempotencyKey);
-        
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            boolean isNew = idempotencyRepository.insertIdempotencyKey(idempotencyKey);
-            if (!isNew) {
-                Optional<String> cachedOpt = idempotencyRepository.getIdempotencyResponse(idempotencyKey);
-                if (cachedOpt.isPresent()) {
-                    String payload = cachedOpt.get();
-                    if (payload == null) {
-                        logger.warn("Idempotency key is currently processing: {}", idempotencyKey);
-                        throw new IdempotencyException("Request is currently processing for idempotency key: " + idempotencyKey);
-                    }
-                    try {
-                        if ("NOT_FOUND".equals(payload)) {
-                            return Optional.empty();
-                        }
-                        return Optional.of(objectMapper.readValue(payload, Item.class));
-                    } catch (Exception e) {
-                        logger.error("Failed to deserialize idempotency response", e);
-                        throw new RuntimeException("Failed to process idempotency response", e);
-                    }
-                } else {
-                    logger.warn("Idempotency key is currently processing: {}", idempotencyKey);
-                    throw new IdempotencyException("Request is currently processing for idempotency key: " + idempotencyKey);
+
+        return transactionTemplate.execute(status -> {
+            if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+                Optional<Item> cached = resolveIdempotency(idempotencyKey);
+                if (cached != null) {
+                    return cached;
                 }
+            }
+
+            Optional<Item> currentOpt = itemRepository.findByIdForUpdate(id);
+            if (currentOpt.isEmpty()) {
+                persistIdempotencyResponse(idempotencyKey, Optional.empty());
+                return Optional.empty();
+            }
+
+            Item current = currentOpt.get();
+            int newQty = current.quantity() + request.delta();
+
+            if (newQty < 0) {
+                throw new IllegalArgumentException("Insufficient stock for adjustment - available: " + current.quantity() + ", requested delta: " + request.delta());
+            }
+
+            Item updated = itemRepository.updateQuantity(id, newQty);
+            transactionRepository.logTransaction(id, updated.sku(), request.delta(), current.quantity(), newQty,
+                    request.delta() >= 0 ? "RESTOCK" : "DISPATCH", operator);
+
+            checkLowStockCrossed(current, updated);
+
+            Optional<Item> result = Optional.of(updated);
+            persistIdempotencyResponse(idempotencyKey, result);
+            return result;
+        });
+    }
+
+    /**
+     * Returns null if no cached response exists (proceed normally).
+     * Returns Optional.empty() if cached as NOT_FOUND.
+     * Returns Optional.of(item) if cached as found.
+     * Throws IdempotencyException if the key is still processing.
+     */
+    private Optional<Item> resolveIdempotency(String idempotencyKey) {
+        boolean isNew = idempotencyRepository.insertIdempotencyKey(idempotencyKey);
+        if (isNew) {
+            return null;
+        }
+
+        Optional<String> cachedOpt = idempotencyRepository.getIdempotencyResponseForUpdate(idempotencyKey);
+        if (cachedOpt.isPresent()) {
+            String payload = cachedOpt.get();
+            if (payload == null) {
+                logger.warn("Idempotency key is currently processing: {}", idempotencyKey);
+                throw new IdempotencyException("Request is currently processing for idempotency key: " + idempotencyKey);
+            }
+            try {
+                if ("NOT_FOUND".equals(payload)) {
+                    return Optional.empty();
+                }
+                Item item = objectMapper.readValue(payload, Item.class);
+                return Optional.of(item);
+            } catch (Exception e) {
+                logger.error("Failed to deserialize idempotency response", e);
+                throw new RuntimeException("Failed to process idempotency response", e);
             }
         }
 
-        Optional<Item> result;
+        logger.warn("Idempotency key is currently processing: {}", idempotencyKey);
+        throw new IdempotencyException("Request is currently processing for idempotency key: " + idempotencyKey);
+    }
+
+
+
+    private void checkLowStockCrossed(Item before, Item after) {
+        if (before.quantity() >= before.lowStockThreshold() && after.quantity() < after.lowStockThreshold()) {
+            logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", after.sku(), after.quantity());
+            eventPublisher.publishEvent(new LowStockEvent(this, after));
+        }
+    }
+
+
+
+    private void persistIdempotencyResponse(String idempotencyKey, Optional<Item> result) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return;
+        }
         try {
-            // Use TransactionTemplate to handle the transaction programmatically instead of @Lazy proxy hack
-            result = transactionTemplate.execute(status -> {
-                Optional<Item> currentOpt = itemRepository.findByIdForUpdate(id);
-                if (currentOpt.isEmpty()) {
-                    return Optional.empty();
-                }
-                
-                Item current = currentOpt.get();
-                int newQty = current.quantity() + request.delta();
-                
-                if (newQty < 0) {
-                    throw new IllegalArgumentException("Insufficient stock for adjustment");
-                }
-                
-                Item updated = itemRepository.updateQuantity(id, newQty);
-                transactionRepository.logTransaction(id, updated.sku(), request.delta(), current.quantity(), newQty, request.delta() >= 0 ? "RESTOCK" : "DISPATCH", operator);
-                
-                if (current.quantity() >= updated.lowStockThreshold() && updated.quantity() < updated.lowStockThreshold()) {
-                    logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", updated.sku(), updated.quantity());
-                    eventPublisher.publishEvent(new LowStockEvent(this, updated));
-                }
-                return Optional.of(updated);
-            });
-        } catch (Exception ex) {
-            if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-                logger.warn("Transaction failed for idempotency key [{}]. Deleting key to allow retry.", idempotencyKey);
-                idempotencyRepository.deleteIdempotencyKey(idempotencyKey);
-            }
-            throw ex;
+            String payload = result.isPresent() ? objectMapper.writeValueAsString(result.get()) : "NOT_FOUND";
+            idempotencyRepository.updateIdempotencyResponse(idempotencyKey, payload);
+        } catch (Exception e) {
+            logger.error("Failed to serialize idempotency response", e);
         }
-        
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            try {
-                String payload = result.isPresent() ? objectMapper.writeValueAsString(result.get()) : "NOT_FOUND";
-                idempotencyRepository.updateIdempotencyResponse(idempotencyKey, payload);
-            } catch (Exception e) {
-                logger.error("Failed to serialize idempotency response", e);
-            }
+    }
+
+    @Transactional
+    public List<Item> batchCreate(BatchCreateItemRequest request, String operator) {
+        logger.info("Batch creating {} items", request.items().size());
+        return request.items().stream()
+                .map(item -> addItem(item, operator))
+                .toList();
+    }
+
+    @Transactional
+    public boolean restoreItem(long id, String operator) {
+        logger.info("Restoring item with ID: {}", id);
+        Optional<Item> archivedOpt = itemRepository.findByIdForUpdate(id);
+        if (archivedOpt.isEmpty()) {
+            return false;
         }
-        return result;
+        Item archived = archivedOpt.get();
+        if (!archived.archived()) {
+            logger.warn("Item {} is not archived, skipping restore", id);
+            return false;
+        }
+        boolean restored = itemRepository.restoreById(id);
+        if (restored) {
+            Item restoredItem = itemRepository.findById(id).orElseThrow();
+            transactionRepository.logTransaction(id, restoredItem.sku(), restoredItem.quantity(), 0, restoredItem.quantity(), "RESTORED", operator);
+        }
+        return restored;
+    }
+
+    @Transactional(readOnly = true)
+    public CursorResponse<StockTransactionResponse> getTransactions(Long lastId, int size, Long itemId) {
+        logger.info("Fetching stock transactions lastId={}, size={}, itemId={}", lastId, size, itemId);
+        return transactionRepository.findTransactions(lastId, size, itemId);
+    }
+
+    private void checkAndPublishLowStock(Item item) {
+        if (item.quantity() < item.lowStockThreshold()) {
+            logger.warn("Low stock detected for SKU: {} (quantity: {}). Publishing push alert event.", item.sku(), item.quantity());
+            eventPublisher.publishEvent(new LowStockEvent(this, item));
+        }
     }
 
     @Transactional(readOnly = true)
@@ -192,7 +261,7 @@ public class InventoryService {
         Long lastId = null;
         int size = 500;
         boolean hasMore = true;
-        
+
         while (hasMore) {
             CursorResponse<Item> page = listItems(lastId, size, search, category);
             for (Item item : page.items()) {

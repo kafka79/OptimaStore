@@ -1,6 +1,7 @@
 package com.inventoryapp.core.web;
 
 import com.inventoryapp.core.dto.ErrorResponse;
+import com.inventoryapp.core.event.KafkaPublishException;
 import com.inventoryapp.core.exception.DuplicateSkuException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -54,5 +55,11 @@ public class GlobalExceptionHandler {
                 .collect(Collectors.joining(", "));
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new ErrorResponse("VALIDATION_FAILED", message));
+    }
+
+    @ExceptionHandler(KafkaPublishException.class)
+    public ResponseEntity<ErrorResponse> handleKafkaPublish(KafkaPublishException ex) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(new ErrorResponse("MESSAGE_BROKER_UNAVAILABLE", ex.getMessage()));
     }
 }

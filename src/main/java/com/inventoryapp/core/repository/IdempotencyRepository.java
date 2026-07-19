@@ -19,15 +19,25 @@ public class IdempotencyRepository {
     }
 
     public boolean insertIdempotencyKey(String key) {
-        String sql = "INSERT INTO idempotency_keys (idempotency_key, created_at) VALUES (:key, :createdAt)";
+        String sql = "INSERT INTO idempotency_keys (idempotency_key, created_at) VALUES (:key, :createdAt) ON CONFLICT DO NOTHING";
         try {
             int updated = jdbcTemplate.update(sql, Map.of(
                     "key", key,
                     "createdAt", Timestamp.from(Instant.now())
             ));
             return updated > 0;
-        } catch (org.springframework.dao.DuplicateKeyException e) {
+        } catch (org.springframework.dao.DataAccessException e) {
             return false;
+        }
+    }
+
+    public Optional<String> getIdempotencyResponseForUpdate(String key) {
+        String sql = "SELECT response_payload FROM idempotency_keys WHERE idempotency_key = :key FOR UPDATE";
+        try {
+            List<String> results = jdbcTemplate.query(sql, Map.of("key", key), (rs, rowNum) -> rs.getString("response_payload"));
+            return results.isEmpty() ? Optional.empty() : Optional.ofNullable(results.get(0));
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to check idempotency key with lock", e);
         }
     }
 

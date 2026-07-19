@@ -37,7 +37,7 @@ public class ItemRepository {
     }
 
     public CursorResponse<Item> findAll(Long lastId, int size, String search, String category) {
-        StringBuilder selectSql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items WHERE archived = false");
+        StringBuilder selectSql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version FROM items WHERE archived = false");
         MapSqlParameterSource params = new MapSqlParameterSource();
 
         if (lastId != null) {
@@ -69,7 +69,7 @@ public class ItemRepository {
     }
 
     public List<Item> findItemsForExport(String search, String category) {
-        StringBuilder sql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items WHERE archived = false");
+        StringBuilder sql = new StringBuilder("SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version FROM items WHERE archived = false");
         MapSqlParameterSource params = new MapSqlParameterSource();
 
         if (search != null && !search.trim().isEmpty()) {
@@ -94,7 +94,7 @@ public class ItemRepository {
 
     public Optional<Item> findById(long id) {
         String sql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version
                 FROM items WHERE id = :id AND archived = false
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource("id", id);
@@ -108,7 +108,7 @@ public class ItemRepository {
 
     public Optional<Item> findByIdForUpdate(long id) {
         String sql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version
                 FROM items WHERE id = :id AND archived = false FOR UPDATE
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource("id", id);
@@ -122,7 +122,7 @@ public class ItemRepository {
 
     public Optional<Item> findArchivedBySku(String sku) {
         String sql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version
                 FROM items WHERE sku = :sku AND archived = true
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource("sku", sku.trim());
@@ -136,7 +136,7 @@ public class ItemRepository {
 
     public Optional<Item> findBySkuAny(String sku) {
         String sql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version
                 FROM items WHERE sku = :sku
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource("sku", sku.trim());
@@ -151,9 +151,9 @@ public class ItemRepository {
     public Item reactivateItem(long id, String name, int quantity, BigDecimal unitPrice, String category, Integer lowStockThreshold) {
         String sql = """
                 UPDATE items
-                SET name = :name, quantity = :quantity, unit_price = :unitPrice, category = :category, updated_at = :updatedAt, archived = false, low_stock_threshold = :lowStockThreshold
+                SET name = :name, quantity = :quantity, unit_price = :unitPrice, category = :category, updated_at = :updatedAt, archived = false, low_stock_threshold = :lowStockThreshold, version = version + 1
                 WHERE id = :id
-                RETURNING id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
+                RETURNING id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("name", name.trim())
@@ -171,14 +171,9 @@ public class ItemRepository {
     }
 
     public Item insert(String sku, String name, int quantity, BigDecimal unitPrice, String category, Integer lowStockThreshold) {
-        Optional<Item> existingOpt = findBySkuAny(sku);
-        if (existingOpt.isPresent()) {
-            throw new DuplicateSkuException(sku.trim(), null);
-        }
-
         String sql = """
-                INSERT INTO items (sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold)
-                VALUES (:sku, :name, :quantity, :unitPrice, :category, :updatedAt, :archived, :lowStockThreshold)
+                INSERT INTO items (sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version)
+                VALUES (:sku, :name, :quantity, :unitPrice, :category, :updatedAt, :archived, :lowStockThreshold, 0)
                 """;
         Instant now = Instant.now();
         String normalizedCategory = normalizeCategory(category);
@@ -197,11 +192,23 @@ public class ItemRepository {
         try {
             jdbcTemplate.update(sql, params, keyHolder);
             long id = extractId(keyHolder);
-            return new Item(id, sku.trim(), name.trim(), quantity, unitPrice, normalizedCategory, now, false, threshold);
+            return new Item(id, sku.trim(), name.trim(), quantity, unitPrice, normalizedCategory, now, false, threshold, 0);
         } catch (org.springframework.dao.DuplicateKeyException e) {
             throw new DuplicateSkuException(sku.trim(), e);
         } catch (org.springframework.dao.DataAccessException e) {
             throw new IllegalStateException("Failed to insert item", e);
+        }
+    }
+
+    public boolean restoreById(long id) {
+        String sql = "UPDATE items SET archived = false, updated_at = :updatedAt, version = version + 1 WHERE id = :id AND archived = true";
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("updatedAt", Timestamp.from(Instant.now()))
+                .addValue("id", id);
+        try {
+            return jdbcTemplate.update(sql, params) > 0;
+        } catch (org.springframework.dao.DataAccessException e) {
+            throw new IllegalStateException("Failed to restore item", e);
         }
     }
 
@@ -220,9 +227,9 @@ public class ItemRepository {
     public Item updateQuantity(long id, int newQuantity) {
         String sql = """
                 UPDATE items
-                SET quantity = :quantity, updated_at = :updatedAt
+                SET quantity = :quantity, updated_at = :updatedAt, version = version + 1
                 WHERE id = :id AND archived = false
-                RETURNING id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
+                RETURNING id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("quantity", newQuantity)
@@ -238,9 +245,9 @@ public class ItemRepository {
     public Item updateItem(long id, String name, BigDecimal unitPrice, String category) {
         String sql = """
                 UPDATE items
-                SET name = :name, unit_price = :unitPrice, category = :category, updated_at = :updatedAt
+                SET name = :name, unit_price = :unitPrice, category = :category, updated_at = :updatedAt, version = version + 1
                 WHERE id = :id AND archived = false
-                RETURNING id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold
+                RETURNING id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("name", name.trim())
@@ -265,7 +272,7 @@ public class ItemRepository {
                 WHERE archived = false
                 """;
         String lowSql = """
-                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold FROM items
+                SELECT id, sku, name, quantity, unit_price, category, updated_at, archived, low_stock_threshold, version FROM items
                 WHERE quantity < low_stock_threshold AND archived = false ORDER BY quantity, name
                 """;
         try {
@@ -321,7 +328,8 @@ public class ItemRepository {
                 rs.getString("category"),
                 updated,
                 rs.getBoolean("archived"),
-                rs.getInt("low_stock_threshold")
+                rs.getInt("low_stock_threshold"),
+                rs.getInt("version")
         );
     }
 

@@ -1,8 +1,10 @@
 package com.inventoryapp.core.web;
 
 import com.inventoryapp.core.dto.AdjustQuantityRequest;
+import com.inventoryapp.core.dto.BatchCreateItemRequest;
 import com.inventoryapp.core.dto.CreateItemRequest;
 import com.inventoryapp.core.dto.CursorResponse;
+import com.inventoryapp.core.dto.StockTransactionResponse;
 import com.inventoryapp.core.exception.DuplicateSkuException;
 import com.inventoryapp.core.model.Item;
 import com.inventoryapp.core.service.InventoryService;
@@ -56,6 +58,14 @@ public class InventoryController {
         return inventoryService.listItems(lastId, size, search, category);
     }
 
+    @GetMapping("/low-stock")
+    public com.inventoryapp.core.model.InventoryReport lowStock(
+            @RequestParam(defaultValue = "5") int threshold
+    ) {
+        logger.info("REST request to list low stock items (polling fallback) with threshold: {}", threshold);
+        return inventoryService.report(threshold);
+    }
+
     @PostMapping
     public ResponseEntity<Item> create(
             @Valid @RequestBody CreateItemRequest body
@@ -63,6 +73,26 @@ public class InventoryController {
         logger.info("REST request to create item: SKU={}", body.sku());
         Item created = inventoryService.addItem(body, getOperator());
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    @PostMapping("/batch")
+    public ResponseEntity<List<Item>> batchCreate(
+            @Valid @RequestBody BatchCreateItemRequest body
+    ) {
+        logger.info("REST request to batch create {} items", body.items().size());
+        List<Item> created = inventoryService.batchCreate(body, getOperator());
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    @PostMapping("/{id}/restore")
+    public ResponseEntity<Void> restore(
+            @PathVariable long id
+    ) {
+        logger.info("REST request to restore item: id={}", id);
+        if (inventoryService.restoreItem(id, getOperator())) {
+            return ResponseEntity.ok().build();
+        }
+        return ResponseEntity.notFound().build();
     }
 
     @DeleteMapping("/{id}")
@@ -107,11 +137,11 @@ public class InventoryController {
             HttpServletResponse response
     ) throws IOException {
         logger.info("REST request to export CSV via stream");
-        
+
         response.setContentType("text/csv");
         response.setCharacterEncoding("UTF-8");
         response.setHeader("Content-Disposition", "attachment; filename=\"inventory-export.csv\"");
-        
+
         try (PrintWriter writer = response.getWriter()) {
             writer.println("id,sku,name,quantity,unitPrice,category,updatedAt,lowStockThreshold");
             inventoryService.exportToWriter(writer, search, category);

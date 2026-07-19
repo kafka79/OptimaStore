@@ -12,6 +12,7 @@ public record Item(
         String category,
         Instant updatedAt,
         boolean archived,
-        int lowStockThreshold
+        int lowStockThreshold,
+        int version
 ) {
 }
