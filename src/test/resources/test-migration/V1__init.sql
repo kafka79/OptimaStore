@@ -8,7 +8,7 @@ CREATE TABLE items (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     archived BOOLEAN NOT NULL DEFAULT FALSE,
     low_stock_threshold INT NOT NULL DEFAULT 5,
-    CONSTRAINT uk_items_sku UNIQUE (sku)
+    version INT NOT NULL DEFAULT 0
 );
 
 CREATE TABLE stock_transactions (
@@ -20,7 +20,9 @@ CREATE TABLE stock_transactions (
     new_quantity INT NOT NULL,
     reason VARCHAR(255) NOT NULL,
     operator VARCHAR(128) NOT NULL DEFAULT 'anonymous',
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    version INT NOT NULL DEFAULT 0,
+    CONSTRAINT fk_stock_transactions_item FOREIGN KEY (item_id) REFERENCES items(id)
 );
 
 CREATE TABLE outbox_events (
@@ -46,6 +48,9 @@ CREATE INDEX idx_items_lower_name ON items (name);
 CREATE INDEX idx_items_quantity ON items (quantity, archived);
 CREATE INDEX idx_items_archived_id ON items (archived, id);
 CREATE INDEX idx_outbox_status_created ON outbox_events (status, created_at);
+CREATE INDEX idx_stock_transactions_item_id ON stock_transactions (item_id);
+
+CREATE UNIQUE INDEX uk_items_sku_active ON items (sku);
 
 CREATE TABLE users (
     username VARCHAR(50) NOT NULL PRIMARY KEY,
@@ -59,3 +64,6 @@ CREATE TABLE authorities (
     CONSTRAINT fk_authorities_users FOREIGN KEY(username) REFERENCES users(username)
 );
 CREATE UNIQUE INDEX ix_auth_username ON authorities (username, authority);
+
+CREATE INDEX idx_users_enabled ON users (username, enabled);
+CREATE INDEX idx_authorities_username ON authorities (username);

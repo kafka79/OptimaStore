@@ -3,6 +3,7 @@ package com.inventoryapp.core.event;
 import com.inventoryapp.core.model.OutboxEvent;
 import com.inventoryapp.core.repository.OutboxRepository;
 import com.inventoryapp.core.repository.StockTransactionRepository;
+import com.inventoryapp.core.repository.IdempotencyRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -26,7 +27,7 @@ public class OutboxProcessor {
     private static final Logger logger = LoggerFactory.getLogger(OutboxProcessor.class);
     private final OutboxRepository outboxRepository;
     private final StockTransactionRepository transactionRepository;
-    private final com.inventoryapp.core.repository.IdempotencyRepository idempotencyRepository;
+    private final IdempotencyRepository idempotencyRepository;
     private final MessagePublisher messagePublisher;
     private final TransactionTemplate transactionTemplate;
 
@@ -39,7 +40,7 @@ public class OutboxProcessor {
 
     public OutboxProcessor(OutboxRepository outboxRepository, 
                            StockTransactionRepository transactionRepository, 
-                           com.inventoryapp.core.repository.IdempotencyRepository idempotencyRepository,
+                           IdempotencyRepository idempotencyRepository,
                            MessagePublisher messagePublisher, 
                            org.springframework.transaction.PlatformTransactionManager transactionManager, 
                            MeterRegistry meterRegistry) {

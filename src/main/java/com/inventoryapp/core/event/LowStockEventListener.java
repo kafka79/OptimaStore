@@ -28,6 +28,7 @@ public class LowStockEventListener {
     }
 
     @EventListener
+    @org.springframework.scheduling.annotation.Async
     public void handleLowStockEvent(LowStockEvent event) {
         logger.info("PUSH ALERT: Local LowStockEvent caught for SKU [{}]. Storing in outbox table within active transaction...",
                 event.getItem().sku());

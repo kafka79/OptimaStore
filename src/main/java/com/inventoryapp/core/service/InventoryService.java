@@ -259,7 +259,7 @@ public class InventoryService {
     public void exportToWriter(PrintWriter writer, String search, String category) {
         logger.info("Streaming inventory export directly to writer via pagination");
         Long lastId = null;
-        int size = 500;
+        int size = 100;
         boolean hasMore = true;
 
         while (hasMore) {

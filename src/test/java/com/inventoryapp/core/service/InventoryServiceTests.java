@@ -290,7 +290,7 @@ class InventoryServiceTests {
     @Test
     void testExportToWriter() {
         CursorResponse<Item> page = new CursorResponse<>(List.of(sampleItem), null);
-        when(itemRepository.findAll(null, 500, null, null)).thenReturn(page);
+        when(itemRepository.findAll(null, 100, null, null)).thenReturn(page);
 
         java.io.StringWriter sw = new java.io.StringWriter();
         java.io.PrintWriter pw = new java.io.PrintWriter(sw);
